@@ -265,5 +265,9 @@ simulated data, so typos and wildcards never produce an empty panel.
 
 ---
 
+## License
+
+MIT — see [LICENSE](LICENSE). `aspy21` itself is also MIT licensed.
+
 aspy21 is an independent, unofficial client and is not affiliated with
 AspenTech. This project contains no real process data.
