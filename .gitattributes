@@ -1,0 +1,30 @@
+# Normalise line endings: LF in the repository, regardless of platform.
+# Without this, committing from Windows stores CRLF and every diff on a
+# Linux checkout (or in CI) shows spurious whole-file changes.
+* text=auto eol=lf
+
+# Explicit for the file types in this project, so intent survives any change
+# to core.autocrlf on a contributor's machine.
+*.py    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+LICENSE         text eol=lf
+
+# Binary assets: never touch these.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.whl   binary
+*.zip   binary
