@@ -1,23 +1,45 @@
-# aspy21 operation showcase
+# aspy21 platform — user manual
 
-A local, runnable dashboard that exercises every read and search operation in
-[`aspy21`](https://github.com/bazdalaz/aspy21) — a Python client for AspenTech
-InfoPlus.21's ProcessData REST API — against a **fully mocked HTTP backend**.
+[![CI](https://github.com/CharisKomos/aspy21_platform/actions/workflows/ci.yml/badge.svg)](https://github.com/CharisKomos/aspy21_platform/actions/workflows/ci.yml)
 
-Each operation is a Swagger-style card with editable parameters and an
-**Execute** button. Clicking it calls the real `aspy21.AspenClient` and shows
-you the result, the HTTP requests the library actually generated, and the
-equivalent Python snippet.
+An interactive dashboard for [`aspy21`](https://github.com/bazdalaz/aspy21), the
+Python client for AspenTech InfoPlus.21's ProcessData REST API. Every operation
+the library offers is a card you can fill in and run, and every run shows you
+the data, the HTTP the library generated, and the Python you would write to do
+the same thing yourself.
 
-> **No IP.21 server, no credentials, no network access.** `respx` intercepts
-> every outbound HTTP call in-process. `http://mock.ip21.local/ProcessData`
-> does not resolve to anything.
+> **Nothing here touches a real historian.** `respx` intercepts every outbound
+> HTTP call inside the process. `http://mock.ip21.local/ProcessData` does not
+> resolve to anything, and no credentials are needed or accepted.
+
+Use it to learn the library, to see exactly what it puts on the wire before you
+point it at a production server, or as a reference implementation to copy from.
+
+**See also:** [ENDPOINTS.md](ENDPOINTS.md) — a full reference for both this
+platform's REST API and the IP.21 endpoints `aspy21` calls underneath.
 
 ---
 
-## Setup
+## Contents
 
-Create a virtualenv and install into it:
+1. [Install and run](#install-and-run)
+2. [Your first minute](#your-first-minute)
+3. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
+4. [Choosing tags](#choosing-tags)
+5. [What each card does](#what-each-card-does)
+6. [Reading the results](#reading-the-results)
+7. [Using the API directly](#using-the-api-directly)
+8. [Troubleshooting](#troubleshooting)
+9. [Testing and development](#testing-and-development)
+10. [How the mocking works](#how-the-mocking-works)
+11. [Version caveats](#version-caveats)
+12. [Reference](#reference)
+
+---
+
+## Install and run
+
+Requires **Python 3.10 or newer**.
 
 ```bash
 python -m venv .venv
@@ -27,165 +49,349 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Run it:
-
 ```bash
 .venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
 ```
 
-> **Use the interpreter path, not a bare `uvicorn`.** `uvicorn` and the other
-> dependencies live inside `.venv\Scripts\` and are not on your PATH, so a bare
-> `uvicorn main:app` fails with *"uvicorn is not recognized"*, and a bare
-> `python -m uvicorn` picks up the global interpreter and fails with
-> *"No module named uvicorn"*.
+Open <http://127.0.0.1:8000>.
+
+On macOS or Linux the interpreter is at `.venv/bin/python` instead.
+
+> **Use the interpreter path, not a bare `uvicorn`.** The dependencies live
+> inside the virtualenv and are not on your `PATH`. A bare `uvicorn main:app`
+> fails with *"uvicorn is not recognized"*; a bare `python -m uvicorn` picks up
+> your system Python and fails with *"No module named uvicorn"*.
 >
-> Alternatively activate the venv first (`.venv\Scripts\Activate.ps1` in
-> PowerShell, `.venv\Scripts\activate.bat` in cmd), after which plain
-> `uvicorn main:app --reload` works for that shell session.
+> If you prefer short commands, activate the environment first
+> (`.venv\Scripts\Activate.ps1`, or `source .venv/bin/activate`), after which
+> plain `uvicorn main:app --reload` works for that shell.
 
-Run it from the project directory — `main:app` is resolved relative to the
-current working directory.
-
-| URL | What it is |
-| --- | --- |
-| <http://127.0.0.1:8000> | The operation dashboard |
-| <http://127.0.0.1:8000/docs> | FastAPI's generated Swagger UI |
-| <http://127.0.0.1:8000/api/environment> | Installed versions + enum members |
-| <http://127.0.0.1:8000/api/health> | Confirms aspy21 can parse the mock |
+Run it from the project directory — `main:app` is resolved relative to your
+working directory.
 
 ### Installing aspy21 from piwheels
 
-`aspy21` wheels are pure Python (`py3-none-any`), so the
-[piwheels](https://www.piwheels.org/project/aspy21/) copies install fine on any
-platform, not just Raspberry Pi:
+The wheels are pure Python (`py3-none-any`), so the
+[piwheels](https://www.piwheels.org/project/aspy21/) copies install anywhere,
+not just on a Raspberry Pi:
 
 ```bash
 pip install --index-url https://www.piwheels.org/simple --extra-index-url https://pypi.org/simple aspy21==0.2.0b15
 ```
 
-Keep PyPI as the `--extra-index-url`. piwheels' own `pandas` and `numpy` builds
-are ARM-only; the fallback lets pip pick platform-correct wheels for those.
+Keep PyPI as the `--extra-index-url`: piwheels' own `pandas` and `numpy` builds
+are ARM-only, and the fallback lets pip choose platform-correct wheels.
 
-**`0.2.0b15` is a pre-release.** A bare `pip install aspy21` resolves to the
-much older stable `0.0.4` — you need the exact `==` pin (as in
-`requirements.txt`) or `--pre`.
+> **`0.2.0b15` is a pre-release.** A bare `pip install aspy21` silently gives
+> you the far older stable `0.0.4`. You need the exact `==` pin — as
+> `requirements.txt` has — or `--pre`.
 
-### Development
+---
+
+## Your first minute
+
+1. Start the server and open <http://127.0.0.1:8000>.
+2. Card 1, **Read — RAW**, is already open with sensible defaults. Press
+   **Execute**.
+3. You get process data back, plus the exact SQL `aspy21` generated.
+
+Now try the three things that show it is genuinely running the library:
+
+- **Card 2**, set *Interval* to `60` and Execute. Expand *Intercepted HTTP* and
+  find `period=600` in the request body — `aspy21` converted seconds to tenths
+  of a second. Change the interval to `30` and it becomes `period=300`. Clear
+  the field and the clause disappears entirely.
+- **Card 9**, leave *ReaderType* on `AVG` and Execute. It takes about 1.5
+  seconds, makes **3** HTTP attempts, and raises `tenacity.RetryError`. Switch
+  to `RAW` and Execute again: instant, **1** attempt,
+  `httpx.HTTPStatusError`. That difference is real library behaviour.
+- **Card 3**, press Execute twice. The values move, because the mock adds
+  jitter.
+
+---
+
+## The dashboard, top to bottom
+
+| Section | What it is |
+| --- | --- |
+| **Header** | Installed `aspy21`, `pandas` and `httpx` versions, plus a link to the generated Swagger docs |
+| **Simulated-data banner** | The mock's base URL and datasource |
+| **Tag browser** | Discover tags from IP.21 and choose which ones the cards use |
+| **Cards 1–9** | One per operation. Click a title to expand or collapse |
+| **Footer** | Attribution |
+
+Under the tag browser, a fine-print line reports the `ReaderType` and
+`IncludeFields` members **your installed version actually has**, and whether a
+cache API is present. These are probed at runtime, so they stay honest if you
+change versions.
+
+---
+
+## Choosing tags
+
+You never have to hardcode tag names. The **Tag browser** discovers them the
+same way you would against a live historian.
+
+### Discovering
+
+1. Enter a **tag pattern**. `*` matches any run of characters, `?` matches
+   exactly one. Try `*`, `FLOW_*`, `*_205`, `ATI11?`.
+2. Optionally enter a **description filter** — free text matched against tag
+   descriptions, for example `temperature`.
+3. Press **Browse tags**.
+
+The results panel reports how many tags matched, **which IP.21 endpoint was
+used**, the intercepted HTTP call, and the equivalent Python. The endpoint is
+not your choice — `aspy21` decides:
+
+| What you entered | Endpoint `aspy21` used |
+| --- | --- |
+| Pattern only | `GET /Browse` |
+| Anything in the description filter | `POST /SQL` with `g="aspy21_search"` |
+
+Discovery results **accumulate**, so you can browse `FLOW_*`, then `PUMP_*`,
+and end up able to pick from both.
+
+### Selecting
+
+Tick the tags you want in the results table, or press **Select all**. Then
+either:
+
+- **Apply selection to all cards** — pushes your selection to every card at
+  once, or
+- **From browser** on an individual card — applies it to just that card.
+
+### The per-card picker
+
+Every card's *Tags* field is a multi-select chip list:
+
+| Control | Effect |
+| --- | --- |
+| Click a chip | Toggle that tag |
+| **Shift-click** a chip | Select or deselect the whole range from your last click |
+| **All** / **None** | Everything or nothing, on this card |
+| **From browser** | Copy the tag browser's current selection |
+| Text box + **Add** | Type names manually, comma-separated, for tags discovery did not return |
+
+A counter shows `n of m selected`. If you select nothing, **Execute** is
+disabled-looking and refuses to run — deliberately, so a card can never quietly
+fall back to defaults and report data for tags you did not pick.
+
+---
+
+## What each card does
+
+### 1. Read — RAW
+
+Raw stored points over a time range, exactly as the historian holds them, so
+timestamps are **unevenly spaced**.
+
+*Set:* tags, start, end, `IncludeFields`, `OutputFormat`.
+*Look for:* irregular gaps between timestamps; `request=4` in the SQL.
+
+### 2. Read — INT (interpolated)
+
+Values on a fixed interval grid.
+
+*Set:* tags, start, end, **interval in seconds**, `IncludeFields`,
+`OutputFormat`.
+*Look for:* `period=600` in the request body when interval is `60` — the
+tenths-of-a-second conversion. Leaving interval blank omits the clause
+altogether.
+
+### 3. Read — SNAPSHOT
+
+The current value of each tag. **No time range needed.**
+
+*Set:* tags, `IncludeFields`, `OutputFormat`.
+*Look for:* a single row per tag; the timestamp is generated client-side, so it
+changes each run. `aspy21` also switches to SNAPSHOT automatically whenever you
+omit both start and end, whatever `read_type` you asked for.
+
+### 4. Read — AVG (aggregate)
+
+Averaged buckets. **`AVG` is the only aggregate this release has** — there is
+no `MIN`, `MAX` or `RNG`.
+
+*Set:* tags, start, end, interval (optional), `OutputFormat`.
+*Look for:* this one goes to a **different endpoint** — a POST to the bare base
+URL with `<RT>10</RT>`, not `/SQL`. With an interval you get `<P>600</P><PU>3</PU>`
+(`PU=3` means seconds). Select several tags and watch the HTTP count: this
+reader loops, so N tags means N requests.
+
+### 5. Search (wildcards)
+
+Find tags by name pattern, optionally filtered by description.
+
+*Set:* tag pattern, description filter, `IncludeFields`, limit, case
+sensitivity.
+*Look for:* `IncludeFields.NONE` or `STATUS` returns a plain list of **names**;
+`DESCRIPTION` or `ALL` returns **objects** with name and description. Adding a
+description filter switches the endpoint from `Browse` to SQL search.
+
+### 6. Search — hybrid (search + read)
+
+Resolve a pattern and read the matching tags in one call.
+
+*Set:* pattern, description, start, end, interval, `ReaderType`,
+`IncludeFields`, `OutputFormat`.
+*Look for:* **two** HTTP calls — one to discover tags, one to read them. Adding
+`start` is what flips `search()` from search-only into hybrid mode.
+
+### 7. IncludeFields variants
+
+Runs the same read under several `IncludeFields` values and diffs the results.
+
+*Set:* tags, start, end, which variants to run, `OutputFormat`.
+*Look for:* the field-name pills. Green ones are fields that variant adds over
+`NONE`. `STATUS` adds `status`, `DESCRIPTION` adds `description`, `ALL` adds
+both. In DataFrame output they arrive as `<tag>_status` and `<tag>_description`
+columns.
+
+### 8. Repeat-call timing (cache probe)
+
+Runs one identical read twice and times both.
+
+*Set:* tags, start, end.
+*Look for:* **2 HTTP calls for 2 reads** — proof there is no caching. The card
+also probes `AspenClient` live and reports that `get_cache_stats`,
+`clear_cache` and `invalidate_cache` are all absent, and that `__init__` takes
+no `cache=` keyword. The timing difference is warm-up noise, not a cache hit,
+which is why it is tiny and can go either way. See
+[Version caveats](#version-caveats).
+
+### 9. Error handling and retry
+
+Forces the mock to fail and shows you what surfaces.
+
+*Set:* tags, start, end, `ReaderType`, and the HTTP status to force.
+*Look for:* the contrast.
+
+| `ReaderType` | Attempts | Exception |
+| --- | --- | --- |
+| `AVG` | **3**, with visible backoff | `tenacity.RetryError` wrapping the last `httpx.HTTPStatusError` |
+| `RAW`, `INT`, `SNAPSHOT` | **1** | `httpx.HTTPStatusError` |
+
+Only the XML endpoint used by `AVG` carries `aspy21`'s tenacity retry
+decorator. Everything else fails on the first attempt.
+
+---
+
+## Reading the results
+
+Every execution returns the same five blocks.
+
+**Metrics** — total time, HTTP call count, row count, result kind, and either
+an `ok` badge or an exception badge. The HTTP call count is the most
+informative number on the page: it reveals batching (many tags, one call),
+looping (many tags, many calls) and retries (one tag, three calls).
+
+**Result** — JSON for `OutputFormat.JSON`, or a rendered table for
+`DATAFRAME`. DataFrame tables also show the index name and any
+`df.attrs["tag_descriptions"]` metadata the library attached.
+
+**What happened** — plain-English notes explaining which endpoint was chosen,
+which parameters changed the generated query, and any behaviour worth knowing.
+
+**Intercepted HTTP** — every request `aspy21` made, with method, URL, a kind
+label, status, and **the genuine request body**. This is unedited library
+output, which is what makes the dashboard useful as a reference: what you see
+here is what a real server would receive.
+
+**Equivalent aspy21 code** — a standalone snippet reproducing the call outside
+the dashboard. Copy it into your own script and only `base_url` and `auth` need
+to change.
+
+---
+
+## Using the API directly
+
+Everything the dashboard does is available over HTTP, documented interactively
+at <http://127.0.0.1:8000/docs>.
 
 ```bash
-.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+curl "http://127.0.0.1:8000/api/tags?pattern=FLOW_*"
 ```
-
-Adds `ruff` (lint + format) and `pytest` on top of the runtime dependencies.
-Tool configuration lives in `pyproject.toml`.
 
 ```bash
-.venv\Scripts\python.exe -m ruff check .
+curl -X POST http://127.0.0.1:8000/api/execute -H "Content-Type: application/json" -d "{\"operation\":\"read_snapshot\",\"params\":{\"tags\":[\"REACTOR_TEMP\"],\"include\":\"ALL\"}}"
 ```
 
-`pyproject.toml` also carries the project metadata, so `pip install -e .` works
-if you prefer that to `requirements.txt`. Note `requires-python = ">=3.10"`,
-one minor version above aspy21's own 3.9 floor, because the Pydantic models in
-`main.py` use PEP 604 unions (`str | None`) that Pydantic resolves at runtime.
+Full parameter and response documentation: **[ENDPOINTS.md](ENDPOINTS.md)**.
 
-### Testing
+---
+
+## Troubleshooting
+
+**"uvicorn is not recognized" / "No module named uvicorn"**
+You are not using the virtualenv's interpreter. Use
+`.venv\Scripts\python.exe -m uvicorn …`, or activate the environment first.
+
+**The page will not load / connection refused**
+Check something is listening:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+**Edits are not taking effect**
+Look for more than one server process holding port 8000. A stale worker will
+keep serving old code even after you restart. On Windows:
+
+```bash
+Get-NetTCPConnection -LocalPort 8000 -State Listen
+```
+
+Stop everything on that port and start once, with `--reload`.
+
+**A card returns no rows**
+Check the time range is in the past and start precedes end. The mock generates
+data for whatever window you ask for, so an inverted or zero-length range
+yields nothing.
+
+**"Select at least one tag before executing"**
+Working as intended — the card has no tags selected. Use **All** on the card,
+or pick some in the tag browser.
+
+**Card 9 takes about 1.5 seconds**
+Also intended. That is `aspy21`'s exponential backoff between three real retry
+attempts.
+
+---
+
+## Testing and development
 
 ```bash
 .venv\Scripts\python.exe selftest.py
 ```
 
-Drives every card through the ASGI app in-process — no server required — and
-asserts behaviour rather than status codes: the `interval` → `period`
-conversion, Browse-vs-SQL endpoint selection, wildcard matching, per-variant
-field sets, retry counts, tag batching, and value jitter. Exits non-zero on
-failure.
+Drives every card through the ASGI app in-process — no server needed — and
+asserts behaviour rather than status codes: endpoint selection, wildcard
+semantics, the interval-to-period conversion, tag batching, retry counts,
+per-variant field sets, value jitter, and the empty-selection guard. Exits
+non-zero on failure.
 
----
-
-## Choosing which tags to use
-
-You don't hardcode tag names. The **Tag browser** at the top of the dashboard
-discovers them the way you would against a live historian, and whatever you
-select there feeds every card below.
-
-1. Enter a pattern (`*`, `FLOW_*`, `ATI11?`, …) and optionally a description
-   filter, then press **Browse tags**.
-2. Tick the tags you want — or **Select all**. Multi-select is the default:
-   tick as many as you like.
-3. Press **Apply selection to all cards**, or **From browser** on an individual
-   card.
-
-Each card's tag field is a multi-select chip list with **All** / **None**, and
-**shift-click selects a contiguous range**. You can also type names
-(comma-separated) to add tags the browser didn't return.
-
-Discovery results accumulate, so you can browse `FLOW_*`, then `PUMP_*`, and
-pick from the union.
-
-### The discovery endpoint
-
-```
-GET /api/tags?pattern=FLOW_*&description=&limit=500
+```bash
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-This is a **real `AspenClient.search()` call** — only the HTTP response is
-mocked — so aspy21 picks the endpoint itself:
+```bash
+.venv\Scripts\python.exe -m ruff check .
+```
 
-| Query | aspy21 calls |
-| --- | --- |
-| pattern only | `GET {base}/Browse?dataSource=…&tag=…` |
-| with `description` | `POST {base}/SQL` with `g="aspy21_search"` |
+```bash
+.venv\Scripts\python.exe -m ruff format .
+```
 
-The response includes the intercepted HTTP call and the equivalent Python, both
-shown in the panel, so you can confirm which endpoint was used. Swapping the
-mock for a real IP.21 host is a `base_url` change — the discovery code is
-unchanged.
+Tool configuration is in `pyproject.toml`, which also carries project metadata,
+so `pip install -e .` works if you prefer it to `requirements.txt`.
+`requires-python` is `>=3.10`, one minor above `aspy21`'s own 3.9 floor,
+because the Pydantic models in `main.py` use PEP 604 unions (`str | None`) that
+Pydantic resolves at runtime.
 
-If no tags are selected, execution is refused with a clear message rather than
-silently falling back to defaults (`HTTP 400`), so a card can never report data
-for tags you didn't choose.
-
----
-
-## What each card demonstrates
-
-| # | Card | aspy21 call |
-| --- | --- | --- |
-| 1 | Read — RAW | `read(..., read_type=ReaderType.RAW)` |
-| 2 | Read — INT | `read(..., read_type=ReaderType.INT, interval=…)` |
-| 3 | Read — SNAPSHOT | `read(..., read_type=ReaderType.SNAPSHOT)`, no time range |
-| 4 | Read — AVG | `read(..., read_type=ReaderType.AVG)`, with and without `interval` |
-| 5 | Search | `search(tag="REACTOR*", description=…)` with every `IncludeFields` |
-| 6 | Search — hybrid | `search(tag=…, start=…)` — search + read in one call |
-| 7 | IncludeFields variants | the same read under NONE / STATUS / DESCRIPTION / ALL, diffed |
-| 8 | Repeat-call timing | same read twice, timed, with a live cache-API probe |
-| 9 | Error handling & retry | forced HTTP failure; shows retry count and exception type |
-
----
-
-## Two places the brief did not match the library
-
-Both were found by reading the installed source, and both are surfaced
-honestly in the UI rather than papered over.
-
-**1. There is no cache in `0.2.0b15`.** The brief asked for a card using
-`cache=True` and `client.get_cache_stats()`. This release has no `cache.py`,
-`AspenClient.__init__` takes no `cache=` keyword, and none of
-`get_cache_stats` / `clear_cache` / `invalidate_cache` exist. Those APIs live on
-the project's git `main` branch, not in the published wheel.
-
-Rather than fake cache statistics, **card 8** probes `AspenClient` at runtime,
-prints what it finds, runs the identical read twice, and proves both calls
-reached HTTP (2 intercepted requests for 2 reads — a cache would have made it
-1). The timing delta it reports is warm-up noise, which is why it is tiny and
-can go either way.
-
-**2. `ReaderType` has no `MIN`, `MAX` or `RNG`.** This release exposes exactly
-`RAW`, `INT`, `SNAPSHOT`, `AVG`. **Card 4** covers `AVG` — the only aggregate —
-and says so on the card.
-
-If you need cache + MIN/MAX/RNG, that means a different version of aspy21, and
-cards 4 and 8 would need revisiting.
+CI runs `ruff check`, `ruff format --check`, and `selftest.py` on Python 3.10,
+3.11 and 3.12 for every push and pull request — see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ---
 
@@ -202,91 +408,79 @@ router.post(url=BASE_URL).mock(side_effect=self._handle_xml)
 
 transport = respx.transports.MockTransport(router=router)
 client = AspenClient(
-    base_url=BASE_URL, datasource="IP21_DEMO", http_client=httpx.Client(transport=transport)
+    base_url=BASE_URL,
+    datasource="IP21_DEMO",
+    http_client=httpx.Client(transport=transport),
 )
 ```
 
-This means every real aspy21 code path runs end to end — query building, HTTP,
+Every real `aspy21` code path therefore runs end to end — query building, HTTP,
 response parsing, DataFrame assembly, tenacity retry — with only the wire
-response faked. It also avoids `respx`'s global patching, so the server stays
-thread-safe, and a fresh router per execution keeps each card's request log
-isolated.
+response faked. Injecting a transport also avoids `respx`'s process-wide global
+patching, which keeps the server thread-safe, and a fresh router per execution
+keeps each card's request log isolated.
 
-The mock **parses the queries aspy21 really generated** (tag names, time range,
-`period=`, `<P>`/`<PU>`, wildcard patterns) and answers accordingly, so the
-request bodies shown in the UI are genuine library output.
+The mock **parses the queries `aspy21` actually generated** — tag names, time
+range, `period=`, `<P>`/`<PU>`, wildcard patterns — and answers accordingly. The
+request bodies in the UI are genuine library output, not canned strings.
 
-### Endpoints aspy21 0.2.0b15 actually calls
-
-| Operation | HTTP call |
-| --- | --- |
-| SNAPSHOT read | `POST {base}/SQL` — body `<SQL g="aspy21_snapshot">` |
-| RAW / INT read | `POST {base}/SQL` — body `<SQL g="aspy21_history">` |
-| `search(description=…)` | `POST {base}/SQL` — body `<SQL g="aspy21_search">` |
-| `search(tag=…)` | `GET {base}/Browse?dataSource=…&tag=…` |
-| AVG read | `POST {base}` — body `<Q f="d">`, the XML endpoint |
-
-Two details worth knowing, both visible in the dashboard:
-
-- The three SQL variants **share one URL** and differ only by the `g=`
-  attribute in the XML body, so the mock dispatches on body content.
-- **Only the XML endpoint retries.** `XmlHistoryReader._fetch` carries
-  `@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=8))`.
-  Since `AVG` is the only read type routed there, an HTTP 500 on an AVG read
-  makes 3 attempts and raises `tenacity.RetryError` (~1.5 s of real backoff),
-  while the same failure on RAW/INT/SNAPSHOT raises `httpx.HTTPStatusError`
-  after a single attempt. Card 9 lets you flip between the two.
-
-### The `period` conversion
-
-For RAW/INT (the SQL history path), `interval` seconds becomes
-`period = interval * 10` in tenths of a second, inside the SQL `WHERE` clause.
-Set `interval=60` on card 2 and look for `period=600` in the intercepted body.
-
-The AVG path is different: it emits `<P>{interval}</P><PU>3</PU>`, where `PU=3`
-means the period is in seconds. Omitting `interval` drops the `<P>` element
-entirely, letting the server choose the bucket size.
+`mock_backend.py` is the single seam. Everything else drives the unmodified
+library. For the full endpoint and payload reference, see
+[ENDPOINTS.md](ENDPOINTS.md).
 
 ---
 
-## Project layout
+## Version caveats
 
-```
-main.py            FastAPI app, routes, templates
-operations.py      the 9 card definitions + executors that call real aspy21
-mock_backend.py    the ONLY module that fakes anything (respx + demo tags)
-templates/
-  index.html       server-rendered dashboard
-static/
-  style.css        Swagger-ish styling, light + dark
-  app.js           collect params, POST /api/execute, render the response
-requirements.txt
-```
+This dashboard reports what **your installed version** supports, probed at
+runtime. Against `aspy21 0.2.0b15`, two things differ from what the project's
+GitHub `main` branch documents:
 
-`mock_backend.py` is deliberately the single seam: everything else drives the
-unmodified library.
+**There is no cache layer.** No `cache.py`, no `cache=` constructor keyword, and
+no `get_cache_stats` / `clear_cache` / `invalidate_cache`. Card 8 therefore
+measures and reports the real situation instead of displaying invented cache
+statistics.
 
-## Demo tags
+**`ReaderType` has only `RAW`, `INT`, `SNAPSHOT`, `AVG`.** No `MIN`, `MAX` or
+`RNG`. Card 4 covers `AVG`, the only aggregate.
 
-| Tag | Description | Unit | Nominal |
-| --- | --- | --- | --- |
-| `REACTOR_TEMP` | Reactor R-101 outlet temperature | degC | 252.0 |
-| `REACTOR_PRESSURE` | Reactor R-101 head pressure | barg | 3.45 |
-| `FLOW_101` | Feed flow to reactor R-101 | m3/h | 118.0 |
-| `LEVEL_205` | Buffer tank T-205 level | % | 64.0 |
-| `ATI111` | Ambient temperature indicator 111 | degC | 25.5 |
-
-Values are generated with Gaussian jitter plus a slow random walk and clamped
-to each instrument's range, so repeated executions return different data.
-Quality codes are mostly `0` (Good) with the occasional `1`/`2` so that
-`IncludeFields.STATUS` has something to show. Unknown tag names still return
-simulated data, so typos and wildcards never produce an empty panel.
+Both features exist on the project's git `main` branch but not in the published
+wheel. If you move to a version that has them, cards 4 and 8 are where to look.
 
 ---
 
-## License
+## Reference
+
+### Project layout
+
+```
+main.py               FastAPI app and routes
+operations.py         the 9 card definitions and their executors
+mock_backend.py       the ONLY module that fakes anything
+selftest.py           end-to-end self-test
+templates/index.html  server-rendered dashboard
+static/               style.css, app.js
+ENDPOINTS.md          endpoint reference
+```
+
+### Demo tags
+
+Seventeen simulated tags across a small plant: reactor (`REACTOR_TEMP`,
+`REACTOR_PRESSURE`, `REACTOR_LEVEL`, `JACKET_TEMP`), flows (`FLOW_101`,
+`FLOW_102`, `FLOW_310`), levels (`LEVEL_205`, `LEVEL_206`), rotating equipment
+(`PUMP_101_SPEED`, `PUMP_101_CURRENT`), utilities (`COOLING_WATER_TEMP`,
+`STEAM_HEADER_PRESS`), analysers and final control (`PH_301`, `VALVE_401_POS`),
+and ambient indicators (`ATI111`, `ATI112`).
+
+Values use Gaussian jitter plus a slow random walk, clamped to each
+instrument's range, so repeated executions differ. Quality codes are mostly `0`
+(Good) with occasional `1`/`2` so `IncludeFields.STATUS` has something to show.
+Unknown tag names still return simulated data, so a typo never produces an
+empty panel.
+
+### License
 
 MIT — see [LICENSE](LICENSE). `aspy21` itself is also MIT licensed.
 
-aspy21 is an independent, unofficial client and is not affiliated with
+`aspy21` is an independent, unofficial client and is not affiliated with
 AspenTech. This project contains no real process data.
