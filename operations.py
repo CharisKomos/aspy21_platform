@@ -10,11 +10,12 @@ from __future__ import annotations
 import datetime as dt
 import math
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
-
 from aspy21 import AspenClient, IncludeFields, OutputFormat, ReaderType
+
 from mock_backend import DATASOURCE, TAGS, MockBackend
 
 # Reader types this installed version actually offers. 0.2.0b15 ships
@@ -121,7 +122,7 @@ def _shape_result(result: Any, output: OutputFormat) -> dict[str, Any]:
         return {
             "result_kind": "dataframe",
             "table": df_to_table(result),
-            "row_count": int(len(result)),
+            "row_count": len(result),
             "records": None,
         }
     if isinstance(result, list):
@@ -165,8 +166,12 @@ def op_read_raw(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
 
     client = mb.client()
     result = client.read(
-        tags, start=start, end=end, read_type=ReaderType.RAW,
-        include=include, output=output,
+        tags,
+        start=start,
+        end=end,
+        read_type=ReaderType.RAW,
+        include=include,
+        output=output,
     )
     return {
         **_shape_result(result, output),
@@ -179,7 +184,7 @@ def op_read_raw(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
         "notes": [
             "RAW returns points as stored by the historian, so timestamps are "
             "unevenly spaced (the mock jitters them deliberately).",
-            "Routed to POST /SQL with g=\"aspy21_history\" and request=4.",
+            'Routed to POST /SQL with g="aspy21_history" and request=4.',
         ],
     }
 
@@ -193,12 +198,17 @@ def op_read_int(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
 
     client = mb.client()
     result = client.read(
-        tags, start=start, end=end, interval=interval,
-        read_type=ReaderType.INT, include=include, output=output,
+        tags,
+        start=start,
+        end=end,
+        interval=interval,
+        read_type=ReaderType.INT,
+        include=include,
+        output=output,
     )
     notes = [
         "INT asks IP.21 for interpolated values on a fixed grid.",
-        "Routed to POST /SQL with g=\"aspy21_history\" and request=1.",
+        'Routed to POST /SQL with g="aspy21_history" and request=1.',
     ]
     if interval is not None:
         notes.append(
@@ -228,7 +238,10 @@ def op_read_snapshot(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
 
     client = mb.client()
     result = client.read(
-        tags, read_type=ReaderType.SNAPSHOT, include=include, output=output,
+        tags,
+        read_type=ReaderType.SNAPSHOT,
+        include=include,
+        output=output,
     )
     return {
         **_shape_result(result, output),
@@ -241,7 +254,7 @@ def op_read_snapshot(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
         "notes": [
             "No start/end needed. aspy21 also auto-selects SNAPSHOT whenever "
             "both start and end are omitted, whatever read_type you pass.",
-            "Routed to POST /SQL with g=\"aspy21_snapshot\", querying "
+            'Routed to POST /SQL with g="aspy21_snapshot", querying '
             "all_records for ip_input_value / ip_input_quality.",
             "The timestamp is generated client-side at request time, so it "
             "changes on every execution.",
@@ -257,13 +270,18 @@ def op_read_aggregate(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
 
     client = mb.client()
     result = client.read(
-        tags, start=start, end=end, interval=interval,
-        read_type=ReaderType.AVG, output=output,
+        tags,
+        start=start,
+        end=end,
+        interval=interval,
+        read_type=ReaderType.AVG,
+        output=output,
     )
 
     notes = [
-        "AVG is the only aggregate in aspy21 " + _version_label() +
-        f" -- ReaderType exposes exactly {AVAILABLE_READER_TYPES}. "
+        "AVG is the only aggregate in aspy21 "
+        + _version_label()
+        + f" -- ReaderType exposes exactly {AVAILABLE_READER_TYPES}. "
         "MIN, MAX and RNG do not exist in this release.",
         "AVG does not match the SQL history reader, so it falls through to "
         "the XML endpoint: POST to the bare base URL with <RT>10</RT>.",
@@ -280,9 +298,7 @@ def op_read_aggregate(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
             "(aspy21 only adds it when interval is set and RT >= 10), so the "
             "server picks its own bucket size."
         )
-    notes.append(
-        "This is the only read path wrapped in tenacity retry inside aspy21."
-    )
+    notes.append("This is the only read path wrapped in tenacity retry inside aspy21.")
     return {
         **_shape_result(result, output),
         "code": _code(
@@ -304,19 +320,21 @@ def op_search(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
 
     client = mb.client()
     result = client.search(
-        tag=tag, description=description, case_sensitive=case_sensitive,
-        limit=limit, include=include,
+        tag=tag,
+        description=description,
+        case_sensitive=case_sensitive,
+        limit=limit,
+        include=include,
     )
     notes = [
-        "Search-only mode: no start given, so aspy21 returns tag metadata "
-        "rather than data.",
+        "Search-only mode: no start given, so aspy21 returns tag metadata rather than data.",
         "include=NONE or STATUS returns a plain list of tag-name strings; "
         "DESCRIPTION or ALL returns dicts with name + description.",
     ]
     if description:
         notes.append(
             "Because description was supplied, aspy21 uses the SQL endpoint "
-            "(g=\"aspy21_search\") and filters server-side, translating * to "
+            '(g="aspy21_search") and filters server-side, translating * to '
             "the SQL wildcard %."
         )
     else:
@@ -348,8 +366,14 @@ def op_search_hybrid(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
 
     client = mb.client()
     result = client.search(
-        tag=tag, description=description, start=start, end=end,
-        interval=interval, read_type=read_type, include=include, output=output,
+        tag=tag,
+        description=description,
+        start=start,
+        end=end,
+        interval=interval,
+        read_type=read_type,
+        include=include,
+        output=output,
     )
     return {
         **_shape_result(result, output),
@@ -386,8 +410,13 @@ def op_include_fields(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
         client = mb.client()
         started = time.perf_counter()
         result = client.read(
-            tags, start=start, end=end, interval=600,
-            read_type=ReaderType.INT, include=include, output=output,
+            tags,
+            start=start,
+            end=end,
+            interval=600,
+            read_type=ReaderType.INT,
+            include=include,
+            output=output,
         )
         elapsed = (time.perf_counter() - started) * 1000
 
@@ -450,7 +479,11 @@ def op_repeat_timing(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
         client = mb.client()
         started = time.perf_counter()
         result = client.read(
-            tags, start=start, end=end, interval=60, read_type=ReaderType.INT,
+            tags,
+            start=start,
+            end=end,
+            interval=60,
+            read_type=ReaderType.INT,
         )
         elapsed = (time.perf_counter() - started) * 1000
         timings.append(
@@ -515,9 +548,14 @@ def op_error_handling(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     result: Any = None
     try:
         result = client.read(
-            tags, start=start, end=end, read_type=read_type,
+            tags,
+            start=start,
+            end=end,
+            read_type=read_type,
         )
-    except BaseException as exc:  # noqa: BLE001 - we are demonstrating this
+    # Deliberately broad: this card exists to report whatever aspy21 raises,
+    # including tenacity.RetryError, so nothing may be filtered out here.
+    except BaseException as exc:
         chain = []
         cursor: BaseException | None = exc
         while cursor is not None and len(chain) < 5:
@@ -620,11 +658,16 @@ def _tags_field(default: list[str], label: str = "Tags") -> dict[str, Any]:
     }
 
 
-def _select(name: str, label: str, options: list[str], default: str,
-            help_text: str = "") -> dict[str, Any]:
+def _select(
+    name: str, label: str, options: list[str], default: str, help_text: str = ""
+) -> dict[str, Any]:
     return {
-        "name": name, "label": label, "type": "select",
-        "options": options, "default": default, "help": help_text,
+        "name": name,
+        "label": label,
+        "type": "select",
+        "options": options,
+        "default": default,
+        "help": help_text,
     }
 
 
@@ -667,8 +710,13 @@ def build_catalog() -> list[dict[str, Any]]:
                 _tags_field(["REACTOR_TEMP", "FLOW_101"]),
                 {"name": "start", "label": "Start", "type": "text", "default": start},
                 {"name": "end", "label": "End", "type": "text", "default": end},
-                {"name": "interval", "label": "Interval (s)", "type": "number",
-                 "default": 60, "help": "Leave blank to omit the period= clause."},
+                {
+                    "name": "interval",
+                    "label": "Interval (s)",
+                    "type": "number",
+                    "default": 60,
+                    "help": "Leave blank to omit the period= clause.",
+                },
                 _select("include", "IncludeFields", AVAILABLE_INCLUDE_FIELDS, "NONE"),
                 _select("output", "OutputFormat", AVAILABLE_OUTPUT_FORMATS, "DATAFRAME"),
             ],
@@ -706,9 +754,13 @@ def build_catalog() -> list[dict[str, Any]]:
                 _tags_field(["REACTOR_TEMP"]),
                 {"name": "start", "label": "Start", "type": "text", "default": day_start},
                 {"name": "end", "label": "End", "type": "text", "default": day_end},
-                {"name": "interval", "label": "Interval (s)", "type": "number",
-                 "default": 600,
-                 "help": "Blank omits <P>, so the server picks the bucket size."},
+                {
+                    "name": "interval",
+                    "label": "Interval (s)",
+                    "type": "number",
+                    "default": 600,
+                    "help": "Blank omits <P>, so the server picks the bucket size.",
+                },
                 _select("output", "OutputFormat", AVAILABLE_OUTPUT_FORMATS, "JSON"),
             ],
         },
@@ -724,18 +776,34 @@ def build_catalog() -> list[dict[str, Any]]:
                 "endpoint for server-side filtering."
             ),
             "fields": [
-                {"name": "tag", "label": "Tag pattern", "type": "text",
-                 "default": "REACTOR*",
-                 "help": "Try REACTOR*, *_101, ATI???, or * for everything."},
-                {"name": "description", "label": "Description filter", "type": "text",
-                 "default": "",
-                 "help": "Optional. Non-empty forces the SQL search path."},
-                _select("include", "IncludeFields", AVAILABLE_INCLUDE_FIELDS,
-                        "DESCRIPTION",
-                        "NONE/STATUS return names; DESCRIPTION/ALL return dicts."),
+                {
+                    "name": "tag",
+                    "label": "Tag pattern",
+                    "type": "text",
+                    "default": "REACTOR*",
+                    "help": "Try REACTOR*, *_101, ATI???, or * for everything.",
+                },
+                {
+                    "name": "description",
+                    "label": "Description filter",
+                    "type": "text",
+                    "default": "",
+                    "help": "Optional. Non-empty forces the SQL search path.",
+                },
+                _select(
+                    "include",
+                    "IncludeFields",
+                    AVAILABLE_INCLUDE_FIELDS,
+                    "DESCRIPTION",
+                    "NONE/STATUS return names; DESCRIPTION/ALL return dicts.",
+                ),
                 {"name": "limit", "label": "Limit", "type": "number", "default": 100},
-                {"name": "case_sensitive", "label": "Case sensitive",
-                 "type": "checkbox", "default": False},
+                {
+                    "name": "case_sensitive",
+                    "label": "Case sensitive",
+                    "type": "checkbox",
+                    "default": False,
+                },
             ],
         },
         {
@@ -749,14 +817,16 @@ def build_catalog() -> list[dict[str, Any]]:
                 "tags, then calls read() internally. Watch for two HTTP calls."
             ),
             "fields": [
-                {"name": "tag", "label": "Tag pattern", "type": "text",
-                 "default": "REACTOR*"},
-                {"name": "description", "label": "Description filter",
-                 "type": "text", "default": ""},
+                {"name": "tag", "label": "Tag pattern", "type": "text", "default": "REACTOR*"},
+                {
+                    "name": "description",
+                    "label": "Description filter",
+                    "type": "text",
+                    "default": "",
+                },
                 {"name": "start", "label": "Start", "type": "text", "default": start},
                 {"name": "end", "label": "End", "type": "text", "default": end},
-                {"name": "interval", "label": "Interval (s)", "type": "number",
-                 "default": 300},
+                {"name": "interval", "label": "Interval (s)", "type": "number", "default": 300},
                 _select("read_type", "ReaderType", AVAILABLE_READER_TYPES, "INT"),
                 _select("include", "IncludeFields", AVAILABLE_INCLUDE_FIELDS, "NONE"),
                 _select("output", "OutputFormat", AVAILABLE_OUTPUT_FORMATS, "DATAFRAME"),
@@ -776,9 +846,13 @@ def build_catalog() -> list[dict[str, Any]]:
                 _tags_field(["REACTOR_TEMP"]),
                 {"name": "start", "label": "Start", "type": "text", "default": start},
                 {"name": "end", "label": "End", "type": "text", "default": end},
-                {"name": "variants", "label": "Variants to run", "type": "multiselect",
-                 "default": ["NONE", "STATUS", "DESCRIPTION", "ALL"],
-                 "options": AVAILABLE_INCLUDE_FIELDS},
+                {
+                    "name": "variants",
+                    "label": "Variants to run",
+                    "type": "multiselect",
+                    "default": ["NONE", "STATUS", "DESCRIPTION", "ALL"],
+                    "options": AVAILABLE_INCLUDE_FIELDS,
+                },
                 _select("output", "OutputFormat", AVAILABLE_OUTPUT_FORMATS, "JSON"),
             ],
         },
@@ -815,10 +889,16 @@ def build_catalog() -> list[dict[str, Any]]:
                 _tags_field(["REACTOR_TEMP"]),
                 {"name": "start", "label": "Start", "type": "text", "default": start},
                 {"name": "end", "label": "End", "type": "text", "default": end},
-                _select("read_type", "ReaderType", AVAILABLE_READER_TYPES, "AVG",
-                        "AVG retries 3x; the others fail immediately."),
-                _select("fail_status", "Mocked HTTP status",
-                        ["500", "502", "503", "404", "401"], "500"),
+                _select(
+                    "read_type",
+                    "ReaderType",
+                    AVAILABLE_READER_TYPES,
+                    "AVG",
+                    "AVG retries 3x; the others fail immediately.",
+                ),
+                _select(
+                    "fail_status", "Mocked HTTP status", ["500", "502", "503", "404", "401"], "500"
+                ),
             ],
         },
     ]

@@ -18,6 +18,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+import aspy21
 import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException
@@ -27,7 +28,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
-import aspy21
 from mock_backend import BASE_URL, DATASOURCE, TAGS, MockBackend
 from operations import (
     AVAILABLE_INCLUDE_FIELDS,
@@ -137,8 +137,7 @@ def api_execute(payload: ExecuteRequest) -> dict[str, Any]:
     if executor is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown operation {payload.operation!r}. "
-            f"Known: {sorted(EXECUTORS)}",
+            detail=f"Unknown operation {payload.operation!r}. Known: {sorted(EXECUTORS)}",
         )
 
     params = dict(payload.params)

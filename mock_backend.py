@@ -46,7 +46,6 @@ from typing import Any
 
 import httpx
 import respx
-
 from aspy21 import AspenClient
 
 # --------------------------------------------------------------------------
@@ -82,45 +81,42 @@ TAGS: dict[str, TagSpec] = {
     t.name: t
     for t in (
         # Reactor area
-        TagSpec("REACTOR_TEMP", "Reactor R-101 outlet temperature", "degC",
-                252.0, 1.8, 200.0, 300.0),
-        TagSpec("REACTOR_PRESSURE", "Reactor R-101 head pressure", "barg",
-                3.45, 0.09, 0.0, 6.0),
-        TagSpec("REACTOR_LEVEL", "Reactor R-101 liquid level", "%",
-                58.0, 2.1, 0.0, 100.0, decimals=1),
-        TagSpec("JACKET_TEMP", "Reactor R-101 jacket temperature", "degC",
-                180.0, 2.6, 20.0, 250.0),
+        TagSpec(
+            "REACTOR_TEMP", "Reactor R-101 outlet temperature", "degC", 252.0, 1.8, 200.0, 300.0
+        ),
+        TagSpec("REACTOR_PRESSURE", "Reactor R-101 head pressure", "barg", 3.45, 0.09, 0.0, 6.0),
+        TagSpec(
+            "REACTOR_LEVEL", "Reactor R-101 liquid level", "%", 58.0, 2.1, 0.0, 100.0, decimals=1
+        ),
+        TagSpec("JACKET_TEMP", "Reactor R-101 jacket temperature", "degC", 180.0, 2.6, 20.0, 250.0),
         # Flow measurements
-        TagSpec("FLOW_101", "Feed flow to reactor R-101", "m3/h",
-                118.0, 3.5, 0.0, 200.0, decimals=1),
-        TagSpec("FLOW_102", "Recycle flow to reactor R-101", "m3/h",
-                42.0, 2.2, 0.0, 120.0, decimals=1),
-        TagSpec("FLOW_310", "Product draw-off flow", "m3/h",
-                76.0, 2.8, 0.0, 150.0, decimals=1),
+        TagSpec(
+            "FLOW_101", "Feed flow to reactor R-101", "m3/h", 118.0, 3.5, 0.0, 200.0, decimals=1
+        ),
+        TagSpec(
+            "FLOW_102", "Recycle flow to reactor R-101", "m3/h", 42.0, 2.2, 0.0, 120.0, decimals=1
+        ),
+        TagSpec("FLOW_310", "Product draw-off flow", "m3/h", 76.0, 2.8, 0.0, 150.0, decimals=1),
         # Tank levels
-        TagSpec("LEVEL_205", "Buffer tank T-205 level", "%",
-                64.0, 2.4, 0.0, 100.0, decimals=1),
-        TagSpec("LEVEL_206", "Product tank T-206 level", "%",
-                41.0, 1.9, 0.0, 100.0, decimals=1),
+        TagSpec("LEVEL_205", "Buffer tank T-205 level", "%", 64.0, 2.4, 0.0, 100.0, decimals=1),
+        TagSpec("LEVEL_206", "Product tank T-206 level", "%", 41.0, 1.9, 0.0, 100.0, decimals=1),
         # Rotating equipment
-        TagSpec("PUMP_101_SPEED", "Feed pump P-101 speed", "rpm",
-                1480.0, 22.0, 0.0, 3000.0, decimals=0),
-        TagSpec("PUMP_101_CURRENT", "Feed pump P-101 motor current", "A",
-                31.5, 1.4, 0.0, 60.0),
+        TagSpec(
+            "PUMP_101_SPEED", "Feed pump P-101 speed", "rpm", 1480.0, 22.0, 0.0, 3000.0, decimals=0
+        ),
+        TagSpec("PUMP_101_CURRENT", "Feed pump P-101 motor current", "A", 31.5, 1.4, 0.0, 60.0),
         # Utilities
-        TagSpec("COOLING_WATER_TEMP", "Cooling water supply temperature", "degC",
-                18.5, 0.8, 0.0, 40.0),
-        TagSpec("STEAM_HEADER_PRESS", "MP steam header pressure", "barg",
-                11.2, 0.35, 0.0, 20.0),
+        TagSpec(
+            "COOLING_WATER_TEMP", "Cooling water supply temperature", "degC", 18.5, 0.8, 0.0, 40.0
+        ),
+        TagSpec("STEAM_HEADER_PRESS", "MP steam header pressure", "barg", 11.2, 0.35, 0.0, 20.0),
         # Analysers and final control
-        TagSpec("PH_301", "Neutralisation tank pH", "pH",
-                7.15, 0.18, 0.0, 14.0),
-        TagSpec("VALVE_401_POS", "Product valve FV-401 position", "%",
-                47.0, 3.1, 0.0, 100.0, decimals=1),
-        TagSpec("ATI111", "Ambient temperature indicator 111", "degC",
-                25.5, 0.7, -20.0, 60.0),
-        TagSpec("ATI112", "Ambient temperature indicator 112", "degC",
-                24.8, 0.7, -20.0, 60.0),
+        TagSpec("PH_301", "Neutralisation tank pH", "pH", 7.15, 0.18, 0.0, 14.0),
+        TagSpec(
+            "VALVE_401_POS", "Product valve FV-401 position", "%", 47.0, 3.1, 0.0, 100.0, decimals=1
+        ),
+        TagSpec("ATI111", "Ambient temperature indicator 111", "degC", 25.5, 0.7, -20.0, 60.0),
+        TagSpec("ATI112", "Ambient temperature indicator 112", "degC", 24.8, 0.7, -20.0, 60.0),
     )
 }
 
@@ -355,8 +351,7 @@ def browse_payload(tags: list[str]) -> dict[str, Any]:
         "data": {
             "result": {"er": 0, "es": ""},
             "tags": [
-                {"t": name, "n": known_tag(name).description, "m": "", "d": 1}
-                for name in tags
+                {"t": name, "n": known_tag(name).description, "m": "", "d": 1} for name in tags
             ],
         }
     }
@@ -424,9 +419,7 @@ class MockBackend:
         # Declared respx routes. All three SQL query kinds share one URL, so
         # the SQL route dispatches further on the XML body.
         self._router.post(url=f"{BASE_URL}/SQL").mock(side_effect=self._handle_sql)
-        self._router.get(url__startswith=f"{BASE_URL}/Browse").mock(
-            side_effect=self._handle_browse
-        )
+        self._router.get(url__startswith=f"{BASE_URL}/Browse").mock(side_effect=self._handle_browse)
         # The bare base URL is aspy21's "XML endpoint" (AVG reads, with retry).
         self._router.post(url=BASE_URL).mock(side_effect=self._handle_xml)
 
@@ -504,12 +497,14 @@ class MockBackend:
         elif group == "aspy21_search":
             desc_pat = _like_pattern(sql, "d") or ""
             name_pat = _like_pattern(sql, "name")
-            candidates = match_tags(name_pat.replace("%", "*").replace("_", "?")) if name_pat else list(TAGS)
+            if name_pat:
+                # SQL LIKE wildcards back to IP.21 ones: % -> *, _ -> ?
+                candidates = match_tags(name_pat.replace("%", "*").replace("_", "?"))
+            else:
+                candidates = list(TAGS)
             needle = desc_pat.strip("%").lower()
             if needle:
-                candidates = [
-                    t for t in candidates if needle in known_tag(t).description.lower()
-                ]
+                candidates = [t for t in candidates if needle in known_tag(t).description.lower()]
             payload = sql_search_payload(candidates, self._rng)
             summary = f"{len(candidates)} tag(s) matched"
 

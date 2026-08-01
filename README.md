@@ -70,6 +70,24 @@ are ARM-only; the fallback lets pip pick platform-correct wheels for those.
 much older stable `0.0.4` — you need the exact `==` pin (as in
 `requirements.txt`) or `--pre`.
 
+### Development
+
+```bash
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+Adds `ruff` (lint + format) and `pytest` on top of the runtime dependencies.
+Tool configuration lives in `pyproject.toml`.
+
+```bash
+.venv\Scripts\python.exe -m ruff check .
+```
+
+`pyproject.toml` also carries the project metadata, so `pip install -e .` works
+if you prefer that to `requirements.txt`. Note `requires-python = ">=3.10"`,
+one minor version above aspy21's own 3.9 floor, because the Pydantic models in
+`main.py` use PEP 604 unions (`str | None`) that Pydantic resolves at runtime.
+
 ### Testing
 
 ```bash
@@ -183,8 +201,9 @@ router.get(url__startswith=f"{BASE_URL}/Browse").mock(side_effect=self._handle_b
 router.post(url=BASE_URL).mock(side_effect=self._handle_xml)
 
 transport = respx.transports.MockTransport(router=router)
-client = AspenClient(base_url=BASE_URL, datasource="IP21_DEMO",
-                     http_client=httpx.Client(transport=transport))
+client = AspenClient(
+    base_url=BASE_URL, datasource="IP21_DEMO", http_client=httpx.Client(transport=transport)
+)
 ```
 
 This means every real aspy21 code path runs end to end — query building, HTTP,

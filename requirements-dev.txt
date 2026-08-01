@@ -1,0 +1,16 @@
+# Development dependencies. Install with:
+#     .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# Includes everything needed to run the app, plus tooling.
+
+-r requirements.txt
+
+# Lint and format. Configured in pyproject.toml ([tool.ruff]).
+#     .venv\Scripts\python.exe -m ruff check .
+#     .venv\Scripts\python.exe -m ruff format .
+ruff>=0.6
+
+# Not required by selftest.py, which runs standalone:
+#     .venv\Scripts\python.exe selftest.py
+# Present so tests can be added under tests/ without another install step.
+pytest>=8.0

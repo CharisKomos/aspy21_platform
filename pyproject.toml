@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aspy21-platform"
+version = "1.0.0"
+description = "Interactive dashboard showcasing every aspy21 read/search operation against a respx-mocked Aspen IP.21 backend"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Charalambos Komodromos" }]
+keywords = ["aspen", "ip21", "infoplus21", "historian", "process-data", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Manufacturing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
+]
+
+# 3.10+ rather than aspy21's own 3.9 floor: the Pydantic models in main.py use
+# PEP 604 unions (`str | None`) that Pydantic resolves at runtime.
+requires-python = ">=3.10"
+
+dependencies = [
+    # aspy21 0.2.0b15 is a pre-release; the exact pin installs it without --pre.
+    "aspy21==0.2.0b15",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "httpx>=0.27",
+    "pandas>=2.0",
+    "tenacity>=9.0",
+    "respx>=0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/CharisKomos/aspy21_platform"
+
+# This is an application of flat modules, not an installable library. The
+# module list keeps `pip install -e .` working for anyone who wants it.
+[tool.setuptools]
+py-modules = ["main", "operations", "mock_backend", "selftest"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+# Note: the dashboard deliberately catches broad exceptions in two places --
+# the error-handling card must report whatever aspy21 raises, and /api/execute
+# must not 500 on a bad parameter combination. Both are commented in place.
+# No blanket ignore is needed, since flake8-blind-except ("BLE") is not
+# selected above.
+
+[tool.ruff.lint.per-file-ignores]
+# selftest.py is a script: top-level statements and long assertion lines are
+# the point.
+"selftest.py" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+# selftest.py runs standalone (`python selftest.py`) and is not a pytest
+# module; this section is here for tests added later.
+testpaths = ["tests"]
+addopts = "-q"
