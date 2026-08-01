@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aspy21 operation showcase</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <h1>aspy21 <span class="muted">operation showcase</span></h1>
+    <p class="lede">
+      Every card below calls the real <code>aspy21.AspenClient</code>. HTTP traffic is
+      intercepted by <code>respx</code> in <code>mock_backend.py</code>.
+    </p>
+    <div class="chips">
+      <span class="chip">aspy21 {{ env.aspy21_version }}</span>
+      <span class="chip">pandas {{ env.pandas_version }}</span>
+      <span class="chip">httpx {{ env.httpx_version }}</span>
+      <span class="chip chip-mock">no network &middot; no credentials</span>
+      <a class="chip chip-link" href="/docs">OpenAPI docs &rarr;</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="banner">
+    <strong>All data is simulated.</strong>
+    <code>{{ env.base_url }}</code> does not resolve to anything; requests are answered
+    in-process. Datasource <code>{{ env.datasource }}</code>.
+    Values carry random jitter, so repeated executions differ.
+  </section>
+
+  <section class="panel" id="tag-browser">
+    <h2>Tag browser &mdash; discover tags from IP.21</h2>
+    <p class="panel-lede">
+      Calls the real <code>client.search()</code>, the same discovery call you would make
+      against a live historian. Whatever you select here becomes the tag list offered by
+      every card below.
+    </p>
+
+    <div class="browse-controls">
+      <div class="param">
+        <label for="browse-pattern">Tag pattern</label>
+        <input type="text" id="browse-pattern" value="*" spellcheck="false">
+        <small class="help">Wildcards: <code>*</code> any run, <code>?</code> exactly one.</small>
+      </div>
+      <div class="param">
+        <label for="browse-description">Description filter</label>
+        <input type="text" id="browse-description" value="" spellcheck="false">
+        <small class="help">Optional. Non-empty switches Browse &rarr; SQL search.</small>
+      </div>
+      <div class="param">
+        <label for="browse-limit">Limit</label>
+        <input type="number" id="browse-limit" value="500">
+      </div>
+      <div class="param param-action">
+        <button class="btn" type="button" id="browse-run">Browse tags</button>
+        <span class="status" id="browse-status" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <div id="browse-result" hidden></div>
+
+    <div class="selection-bar">
+      <span class="muted">Selected for use:</span>
+      <span id="selection-chips" class="selection-chips"></span>
+      <button class="btn btn-ghost btn-sm" type="button" id="apply-selection">
+        Apply selection to all cards
+      </button>
+    </div>
+
+    <details class="known-tags">
+      <summary>Built-in demo tag catalogue ({{ env.demo_tags|length }})</summary>
+      <table class="tags-table">
+        <thead><tr><th>Tag</th><th>Description</th><th>Unit</th><th>Nominal</th></tr></thead>
+        <tbody>
+        {% for tag in env.demo_tags %}
+          <tr>
+            <td><code>{{ tag.name }}</code></td>
+            <td>{{ tag.description }}</td>
+            <td class="muted">{{ tag.unit }}</td>
+            <td class="num">{{ tag.nominal }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </details>
+
+    <p class="fineprint">
+      <strong>ReaderType</strong> in this build:
+      {% for r in env.reader_types %}<code>{{ r }}</code>{% if not loop.last %} {% endif %}{% endfor %}
+      &nbsp;&middot;&nbsp;
+      <strong>IncludeFields</strong>:
+      {% for f in env.include_fields %}<code>{{ f }}</code>{% if not loop.last %} {% endif %}{% endfor %}
+      &nbsp;&middot;&nbsp;
+      <strong>Cache API present</strong>:
+      <code>{{ 'yes' if env.has_cache_api else 'no' }}</code>
+    </p>
+  </section>
+
+  {% for op in catalog %}
+  <article class="op" data-op="{{ op.id }}" id="op-{{ op.id }}">
+    <button class="op-head" type="button" aria-expanded="false">
+      <span class="verb verb-{{ op.verb|lower }}">{{ op.verb }}</span>
+      <span class="op-index">{{ op.index }}</span>
+      <span class="op-title">{{ op.title }}</span>
+      <span class="op-summary">{{ op.summary }}</span>
+      <span class="chevron" aria-hidden="true"></span>
+    </button>
+
+    <div class="op-body" hidden>
+      <p class="op-detail">{{ op.detail }}</p>
+
+      <div class="params">
+        {% for field in op.fields %}
+        <div class="param" data-field="{{ field.name }}" data-type="{{ field.type }}">
+          <label for="{{ op.id }}__{{ field.name }}">{{ field.label }}</label>
+
+          {% if field.type == 'select' %}
+            <select id="{{ op.id }}__{{ field.name }}" name="{{ field.name }}">
+              {% for choice in field.options %}
+              <option value="{{ choice }}" {% if choice == field.default %}selected{% endif %}>{{ choice }}</option>
+              {% endfor %}
+            </select>
+
+          {% elif field.type == 'multiselect' %}
+            <div class="checkgroup">
+              {% for choice in field.options %}
+              <label class="check">
+                <input type="checkbox" name="{{ field.name }}" value="{{ choice }}"
+                       {% if choice in field.default %}checked{% endif %}>
+                <span>{{ choice }}</span>
+              </label>
+              {% endfor %}
+            </div>
+
+          {% elif field.type == 'checkbox' %}
+            <label class="check">
+              <input type="checkbox" id="{{ op.id }}__{{ field.name }}" name="{{ field.name }}"
+                     {% if field.default %}checked{% endif %}>
+              <span class="muted">enabled</span>
+            </label>
+
+          {% elif field.type == 'number' %}
+            <input type="number" id="{{ op.id }}__{{ field.name }}" name="{{ field.name }}"
+                   value="{{ field.default if field.default is not none else '' }}">
+
+          {% elif field.type == 'tagpicker' %}
+            <div class="tagpicker" data-selected="{{ field.default|join(',') }}"
+                 data-default="{{ field.default|join(',') }}">
+              <div class="tagpicker-bar">
+                <span class="tagpicker-count"></span>
+                <button type="button" class="btn-mini tagpicker-all">All</button>
+                <button type="button" class="btn-mini tagpicker-clear">None</button>
+                <button type="button" class="btn-mini tagpicker-from-browser"
+                        title="Use every tag ticked in the tag browser above">
+                  From browser
+                </button>
+              </div>
+              <div class="tagpicker-chips"></div>
+              <div class="tagpicker-actions">
+                <input type="text" class="tagpicker-manual" list="known-tags"
+                       placeholder="add tag(s), comma-separated" spellcheck="false">
+                <button type="button" class="btn-mini tagpicker-add">Add</button>
+                <span class="help">Tip: shift-click a chip to select a whole range.</span>
+              </div>
+            </div>
+
+          {% else %}
+            <input type="text" id="{{ op.id }}__{{ field.name }}" name="{{ field.name }}"
+                   value="{{ field.default }}" spellcheck="false">
+          {% endif %}
+
+          {% if field.help %}<small class="help">{{ field.help }}</small>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-exec" type="button" data-op="{{ op.id }}">Execute</button>
+        <button class="btn btn-ghost btn-reset" type="button">Reset</button>
+        <span class="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="response" hidden></div>
+    </div>
+  </article>
+  {% endfor %}
+
+  <footer class="foot">
+    <p>
+      aspy21 is an independent, unofficial client and is not affiliated with AspenTech.
+      This dashboard ships no real process data.
+    </p>
+  </footer>
+</main>
+
+<datalist id="known-tags">
+  {% for tag in env.demo_tags %}<option value="{{ tag.name }}"></option>{% endfor %}
+</datalist>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# aspy21 0.2.0b15 is a pre-release. An exact == pin installs it without --pre.
+# The wheel is pure Python (py3-none-any) and is available from both PyPI and
+# piwheels; see README for the piwheels-specific install command.
+aspy21==0.2.0b15
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+jinja2>=3.1
+
+# aspy21's own dependencies, pinned loosely and listed explicitly because the
+# demo imports them directly.
+httpx>=0.27
+pandas>=2.0
+tenacity>=9.0
+
+# The mock HTTP layer. Only mock_backend.py uses it.
+respx>=0.22
