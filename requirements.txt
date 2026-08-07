@@ -15,3 +15,8 @@ tenacity>=9.0
 
 # The mock HTTP layer. Only mock_backend.py uses it.
 respx>=0.22
+
+# Stores the live-mode password in the OS credential store (Windows Credential
+# Manager) instead of a file. Only setup_live.py writes; config.py reads.
+# The app degrades to ASPY21_PASSWORD if this is missing.
+keyring>=25.0

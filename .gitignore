@@ -6,3 +6,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+
+# Your live-historian connection settings, written by setup_live.py.
+# Never contains a password -- that goes to the OS credential store -- but it
+# does name your internal server, so it stays out of the repository.
+aspy21.local.json

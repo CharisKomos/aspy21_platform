@@ -78,6 +78,7 @@ code {
   color: var(--muted);
 }
 .chip-mock { background: var(--green-soft); border-color: var(--green); color: var(--green); }
+.chip-live { background: var(--red-soft); border-color: var(--red); color: var(--red); font-weight: 600; }
 .chip-link { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); text-decoration: none; }
 .chip-link:hover { filter: brightness(0.97); }
 
@@ -90,6 +91,11 @@ code {
   border-left-width: 4px;
   border-radius: var(--radius);
   font-size: 14px;
+}
+/* Live mode reads a real historian; the banner should not look routine. */
+.banner-live {
+  background: var(--red-soft);
+  border-color: var(--red);
 }
 .panel {
   background: var(--surface);
@@ -240,6 +246,17 @@ code {
 .op-body { padding: 4px 16px 18px; border-top: 1px solid var(--border); }
 .op-detail { color: var(--muted); font-size: 14px; margin: 14px 0 16px; }
 
+.op-disabled { border-left-color: var(--muted); opacity: 0.75; }
+.op-unavailable {
+  margin: 0 0 16px;
+  padding: 10px 13px;
+  font-size: 13.5px;
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+}
+
 /* params */
 .params {
   display: grid;
@@ -282,6 +299,8 @@ code {
 }
 .btn:hover { filter: brightness(1.07); }
 .btn:disabled { opacity: 0.55; cursor: progress; }
+/* Disabled because the card cannot run here, not because it is busy. */
+.op-disabled .btn-exec:disabled { cursor: not-allowed; }
 .btn-ghost { background: none; color: var(--muted); border-color: var(--border); }
 .btn.needs-tags { background: var(--surface-2); color: var(--muted); border-color: var(--border); }
 .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }

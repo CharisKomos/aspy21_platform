@@ -66,7 +66,12 @@ jobs:
         run: |
           python -c "import aspy21, pandas, httpx, fastapi; print('aspy21', aspy21.__version__); print('pandas', pandas.__version__); print('httpx', httpx.__version__); print('fastapi', fastapi.__version__)"
 
-      - name: Run self-test
+      - name: Run self-test (mock mode)
         # Drives every dashboard card through the ASGI app in-process.
         # No server is started and no network call leaves the runner.
         run: python selftest.py
+
+      - name: Run self-test (live mode)
+        # Starts a localhost server speaking the IP.21 wire format and points
+        # ASPY21_MODE=live at it: real sockets, real auth headers, loopback only.
+        run: python selftest_live.py

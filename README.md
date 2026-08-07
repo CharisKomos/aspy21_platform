@@ -8,12 +8,14 @@ the library offers is a card you can fill in and run, and every run shows you
 the data, the HTTP the library generated, and the Python you would write to do
 the same thing yourself.
 
-> **Nothing here touches a real historian.** `respx` intercepts every outbound
-> HTTP call inside the process. `http://mock.ip21.local/ProcessData` does not
-> resolve to anything, and no credentials are needed or accepted.
+> **Out of the box, nothing here touches a real historian.** `respx` intercepts
+> every outbound HTTP call inside the process. `http://mock.ip21.local/ProcessData`
+> does not resolve to anything, and no credentials are needed or accepted.
 
 Use it to learn the library, to see exactly what it puts on the wire before you
 point it at a production server, or as a reference implementation to copy from.
+When you are ready, [live mode](#live-mode-connecting-to-a-real-historian) points
+the same dashboard at your own IP.21 server.
 
 **See also:** [ENDPOINTS.md](ENDPOINTS.md) — a full reference for both this
 platform's REST API and the IP.21 endpoints `aspy21` calls underneath.
@@ -24,16 +26,17 @@ platform's REST API and the IP.21 endpoints `aspy21` calls underneath.
 
 1. [Install and run](#install-and-run)
 2. [Your first minute](#your-first-minute)
-3. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
-4. [Choosing tags](#choosing-tags)
-5. [What each card does](#what-each-card-does)
-6. [Reading the results](#reading-the-results)
-7. [Using the API directly](#using-the-api-directly)
-8. [Troubleshooting](#troubleshooting)
-9. [Testing and development](#testing-and-development)
-10. [How the mocking works](#how-the-mocking-works)
-11. [Version caveats](#version-caveats)
-12. [Reference](#reference)
+3. [Live mode: connecting to a real historian](#live-mode-connecting-to-a-real-historian)
+4. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
+5. [Choosing tags](#choosing-tags)
+6. [What each card does](#what-each-card-does)
+7. [Reading the results](#reading-the-results)
+8. [Using the API directly](#using-the-api-directly)
+9. [Troubleshooting](#troubleshooting)
+10. [Testing and development](#testing-and-development)
+11. [How the mocking works](#how-the-mocking-works)
+12. [Version caveats](#version-caveats)
+13. [Reference](#reference)
 
 ---
 
@@ -68,6 +71,16 @@ On macOS or Linux the interpreter is at `.venv/bin/python` instead.
 
 Run it from the project directory — `main:app` is resolved relative to your
 working directory.
+
+That gets you the offline demo, which needs no server and no credentials. To
+point it at your own historian instead, run the setup wizard once:
+
+```bash
+.venv\Scripts\python.exe setup_live.py
+```
+
+See [live mode](#live-mode-connecting-to-a-real-historian) for what it asks and
+where to run it.
 
 ### Installing aspy21 from piwheels
 
@@ -107,6 +120,224 @@ Now try the three things that show it is genuinely running the library:
   `httpx.HTTPStatusError`. That difference is real library behaviour.
 - **Card 3**, press Execute twice. The values move, because the mock adds
   jitter.
+
+---
+
+## Live mode: connecting to a real historian
+
+In live mode the dashboard stops mocking: the same cards, the same executors,
+the same `AspenClient` — but the transport is the network and the responses come
+from your IP.21 server.
+
+### The easy way: run the setup wizard
+
+#### Why run it
+
+Connecting to a real historian needs five things to line up: the REST base URL,
+the datasource name, a username, a password, and a TLS decision. Getting any
+one of them wrong produces the same unhelpful symptom — a dashboard that will
+not load data — and there is nothing in the error to tell you which one it was.
+
+The wizard exists so you do not have to guess. It checks each thing in order
+and **stops at the first one that fails**, telling you what is wrong rather
+than leaving you to work backwards from a 401. In particular it finds the base
+URL for you: Aspen exposes the ProcessData REST service under different paths
+depending on version and how IIS was configured, and the wizard probes the
+known ones instead of asking you to know which applies.
+
+It also means you never put a password in a file, a script, or a shell
+variable — see [where the credentials go](#where-the-credentials-go).
+
+You do not have to use it. Every setting has an environment variable, covered
+under [doing it by hand](#doing-it-by-hand). The wizard just checks your
+answers as you give them.
+
+#### Where to run it
+
+**From the project folder**, using the virtualenv's interpreter:
+
+```bash
+cd "C:\path\to\Demo aspy21"
+```
+
+```bash
+.venv\Scripts\python.exe setup_live.py
+```
+
+Both parts matter. The path `.venv\Scripts\python.exe` is relative to the
+project folder, and the settings file is written next to `setup_live.py`, so
+running it from elsewhere either fails to start or configures a copy the
+dashboard will not read. A plain `python setup_live.py` uses your system Python
+and fails on the missing dependencies. On macOS or Linux the interpreter is
+`.venv/bin/python`.
+
+**On the machine that will run the dashboard.** The wizard tests the connection
+from wherever it is running, so its answers only apply there. If you reach the
+historian through Remote Desktop and the plant network is not visible from your
+own PC, run the project — setup and `uvicorn` both — inside the Remote Desktop
+session, and open `http://127.0.0.1:8000` in a browser there. See
+[if it cannot reach the server](#if-it-cannot-reach-the-server).
+
+**Any shell will do** — PowerShell, Command Prompt or a terminal in your
+editor. Nothing needs to be activated first, and nothing needs administrator
+rights: the settings file is written into the project folder and the password
+into your own user account's credential store.
+
+#### What it does
+
+It asks for your server, then does the work itself:
+
+1. **Checks the machine can reach it** at the TCP level, so "wrong URL" and
+   "no network route" are told apart before anything else.
+2. **Finds the REST endpoint** by probing the paths Aspen actually uses
+   (`/ProcessData`, `/ProcessData/AtProcessDataREST.dll`, and others) over both
+   `https` and `http`. You do not have to know which one your site uses.
+3. **Handles the certificate** if it is issued by an internal CA, offering to
+   use a CA bundle before it offers to skip verification.
+4. **Verifies the credentials** against the server and, if they are rejected,
+   says what is usually wrong (username format, Basic vs Windows auth).
+5. **Verifies the datasource** by doing a real tag browse and counting what
+   comes back.
+6. **Saves it** — settings to `aspy21.local.json`, password to Windows
+   Credential Manager.
+
+#### What you need to hand
+
+Three answers. Everything else the wizard works out or defaults sensibly.
+
+| It asks for | At the step called | Notes |
+|---|---|---|
+| **Server** | *Where is the historian?* | A hostname or an IP is enough — `aspen-hist01`, `192.168.10.25`, `192.168.10.25:8080`, or a full URL if you know it |
+| **Username** and **password** | *Credentials* | The password prompt does not echo. This is the only place you ever type it |
+| **Datasource** | *Datasource* | The one thing the wizard cannot guess. Your historian administrator knows it; often `IP21` or a plant code |
+
+(Steps are numbered as you go, but the numbers shift: the TLS step only appears
+when a certificate actually needs a decision. Go by the names.)
+
+If you give it an IP and the server uses HTTPS, expect a certificate warning:
+certificates are issued to hostnames, so one will not validate against an IP
+even when the server is perfectly healthy. The wizard offers you a CA bundle or
+to skip verification. Prefer the hostname where you have one — run `hostname`
+inside the Remote Desktop session to find it.
+
+After that, start the dashboard the ordinary way and it connects to your
+historian:
+
+```bash
+.venv\Scripts\python.exe -m uvicorn main:app --port 8000
+```
+
+Later:
+
+```bash
+.venv\Scripts\python.exe setup_live.py --test
+```
+
+| Command | What it does |
+|---|---|
+| `setup_live.py` | Run (or re-run) the wizard |
+| `setup_live.py --test` | Re-check the saved connection and report where it breaks |
+| `setup_live.py --show` | Print the saved settings, and any env vars overriding them |
+| `setup_live.py --mock` | Switch back to the offline demo, keeping your server details |
+| `setup_live.py --live` | Switch back to your server |
+| `setup_live.py --reset` | Delete the saved settings and the stored password |
+
+### Where the credentials go
+
+**The password is never written to a file.** The wizard stores it in the
+Windows Credential Manager through `keyring`, and `config.py` reads it back at
+startup. `aspy21.local.json` holds only non-secret settings, and is git-ignored
+because it names your internal server. If a `password` key ever appears in that
+file, the app refuses to start rather than load it.
+
+If you would rather not use the credential store, set `ASPY21_PASSWORD` in your
+shell instead — it takes priority when present. Avoid `setx`, which writes the
+value to the registry in plain text.
+
+### If it cannot reach the server
+
+You reach the historian over Remote Desktop, so this is worth checking first:
+**the IP.21 REST service may only be reachable from inside the remote
+network.** If the wizard reports that it cannot open a socket, the settings are
+probably fine and the network is the problem. The quickest test is to open the
+base URL in a browser *inside* the Remote Desktop session — if it works there
+and not from your PC, it is access, not configuration.
+
+Three ways round it:
+
+1. **Run the dashboard on the remote machine.** Copy or clone the project
+   there, create the virtualenv, and run the wizard and `uvicorn` from that
+   desktop. Then browse to `http://127.0.0.1:8000` inside the session.
+2. **Ask for the port to be opened** to your PC, or for a hostname that routes
+   from your network.
+3. **Use the site VPN**, if there is one for plant-network access.
+
+### Doing it by hand
+
+Every setting also has an environment variable, and **environment variables
+always win over the saved file** — handy for overriding one run without
+changing anything:
+
+| Variable | Meaning |
+|---|---|
+| `ASPY21_MODE` | `mock` or `live` |
+| `ASPY21_BASE_URL` | ProcessData REST root, e.g. `https://aspen.yourplant.local/ProcessData` |
+| `ASPY21_DATASOURCE` | IP.21 datasource name. Reads fall back to the server default; `search()` usually needs it |
+| `ASPY21_USERNAME` | HTTP Basic username |
+| `ASPY21_PASSWORD` | HTTP Basic password. Overrides the credential store |
+| `ASPY21_TIMEOUT` | Request timeout in seconds (default `30`) |
+| `ASPY21_VERIFY_SSL` | `false` disables certificate checks. Prefer `ASPY21_CA_BUNDLE` |
+| `ASPY21_CA_BUNDLE` | Path to a CA bundle, for internal certificate authorities |
+| `ASPY21_CONFIG` | Path to the settings file (default `aspy21.local.json`) |
+
+`aspy21` appends `/SQL` and `/Browse` to the base URL itself, so give it the
+root — not a full endpoint path.
+
+### What changes
+
+- The banner turns red and names the server, datasource, user, where the
+  password came from, TLS state and timeout you are actually connected to.
+- The built-in demo tag catalogue disappears, and the tag pickers start empty —
+  your historian's tags are unknown until the **tag browser** has searched.
+  Browse first, then **Apply selection to all cards**.
+- **Card 9 (error handling) is disabled.** It works by forcing the server to
+  return HTTP 500, which is not a thing to ask of a production historian, and
+  faking the failure would prove nothing. Run it in mock mode.
+- The *Intercepted HTTP* panel becomes a real request log: real URLs, real
+  status codes, real byte counts and round-trip times. Request bodies are still
+  shown, because the generated SQL is the point; request headers are never
+  logged, which is where the `Authorization` header lives.
+- The generated Python snippet targets your server and reads the credentials
+  from `os.environ`, so it is safe to copy out of the page.
+
+Misconfiguration fails at startup rather than mid-demo: a missing base URL, a
+scheme-less URL, a password without a username, or a non-numeric timeout all
+raise `ConfigError` before the server binds.
+
+> **Live mode reads real process data.** Start with narrow time ranges. A RAW
+> read across many tags over a long window can return a great deal of data and
+> put real load on the historian.
+
+### If it does not connect
+
+Run `setup_live.py --test` first — it walks the same chain and stops at the
+step that fails. `GET /api/health` does the same from the running app and
+reports the exception type. Common causes:
+
+- **Cannot open a socket** — network access, not settings. See
+  [above](#if-it-cannot-reach-the-server); with Remote Desktop this is the
+  likeliest cause by far.
+- **401** — wrong credentials, or the server wants Windows Integrated auth
+  rather than Basic. See the note on `httpx.Auth` below.
+- **404** — the base URL is wrong. Re-run the wizard and let it probe.
+- **SSL errors** — an internal CA; give the wizard your CA bundle path.
+- **Empty tag browse** — the datasource is unset or wrong.
+
+`aspy21 0.2.0b15` documents HTTP Basic only. If your site fronts IP.21 with
+Windows Integrated authentication, Basic will not work: `AspenClient` also
+accepts any `httpx.Auth` object, so an NTLM or Kerberos auth class plugs in
+there. That path needs a small change in `live_backend.py`, where the
+`httpx.Client` is built.
 
 ---
 
@@ -357,6 +588,20 @@ or pick some in the tag browser.
 Also intended. That is `aspy21`'s exponential backoff between three real retry
 attempts.
 
+**`ConfigError` on startup**
+Live mode is misconfigured; the message names the setting. This is deliberate —
+the check runs before the server binds, so a typo cannot surface three cards
+into a demo. `setup_live.py --show` prints what is currently configured, and
+`--test` checks it against the server.
+
+**Live mode: the tag pickers are empty**
+Expected. The demo catalogue describes the mock's tags, not yours. Browse in the
+tag browser, then **Apply selection to all cards**.
+
+**Live mode: card 9 is greyed out**
+Also expected — it needs a server that fails on command. See
+[live mode](#live-mode-connecting-to-a-real-historian).
+
 ---
 
 ## Testing and development
@@ -370,6 +615,19 @@ asserts behaviour rather than status codes: endpoint selection, wildcard
 semantics, the interval-to-period conversion, tag batching, retry counts,
 per-variant field sets, value jitter, and the empty-selection guard. Exits
 non-zero on failure.
+
+```bash
+.venv\Scripts\python.exe selftest_live.py
+```
+
+Covers the other half: that live mode really opens sockets. It stands up a
+localhost server speaking the IP.21 wire format, requires HTTP Basic auth, and
+points `ASPY21_MODE=live` at it — real httpx, real sockets, real
+`Authorization` headers, loopback only. It asserts that credentials travel,
+that the password never reaches any response or the rendered page, that the
+HTTP log records real statuses and byte counts, that the mock-only card is
+refused with a 409 rather than faked, and that each way of misconfiguring live
+mode fails at startup.
 
 ```bash
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -389,8 +647,9 @@ so `pip install -e .` works if you prefer it to `requirements.txt`.
 because the Pydantic models in `main.py` use PEP 604 unions (`str | None`) that
 Pydantic resolves at runtime.
 
-CI runs `ruff check`, `ruff format --check`, and `selftest.py` on Python 3.10,
-3.11 and 3.12 for every push and pull request — see
+CI runs `ruff check`, `ruff format --check`, `selftest.py` and
+`selftest_live.py` on Python 3.10, 3.11 and 3.12 for every push and pull
+request — see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ---
@@ -428,6 +687,13 @@ request bodies in the UI are genuine library output, not canned strings.
 library. For the full endpoint and payload reference, see
 [ENDPOINTS.md](ENDPOINTS.md).
 
+Because the seam is exactly one method — `client()`, which returns an
+`AspenClient` — swapping it for a real connection is all that
+[live mode](#live-mode-connecting-to-a-real-historian) does.
+`live_backend.LiveBackend` exposes the same `client()`, `http_calls` and
+context-manager surface, so every executor runs unchanged; only the transport
+differs. `config.SETTINGS` decides which one `open_backend()` hands out.
+
 ---
 
 ## Version caveats
@@ -456,11 +722,17 @@ wheel. If you move to a version that has them, cards 4 and 8 are where to look.
 ```
 main.py               FastAPI app and routes
 operations.py         the 9 card definitions and their executors
+config.py             settings: environment > aspy21.local.json > defaults
+setup_live.py         interactive setup for a real historian
 mock_backend.py       the ONLY module that fakes anything
-selftest.py           end-to-end self-test
+live_backend.py       the real connection, same shape as the mock
+selftest.py           end-to-end self-test (mock mode)
+selftest_live.py      end-to-end self-test (live mode, against localhost)
 templates/index.html  server-rendered dashboard
 static/               style.css, app.js
 ENDPOINTS.md          endpoint reference
+
+aspy21.local.json     your saved connection (git-ignored, never has a password)
 ```
 
 ### Demo tags

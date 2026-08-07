@@ -5,10 +5,13 @@ Two layers of HTTP live in this project, and it helps to keep them apart:
 | Layer | What it is | Who calls it |
 | --- | --- | --- |
 | **[Platform API](#part-1--platform-api)** | The dashboard's own REST API (FastAPI) | Your browser, `curl`, any HTTP client |
-| **[IP.21 API](#part-2--ip21-endpoints-aspy21-calls)** | The AspenTech ProcessData endpoints | `aspy21` itself, intercepted by `respx` |
+| **[IP.21 API](#part-2--ip21-endpoints-aspy21-calls)** | The AspenTech ProcessData endpoints | `aspy21` itself, intercepted by `respx` in mock mode |
 
 A click in the dashboard travels down both: the browser calls the Platform API,
-which calls `aspy21`, which calls the IP.21 API, which the mock answers.
+which calls `aspy21`, which calls the IP.21 API, which the mock answers — or,
+in [live mode](README.md#live-mode-connecting-to-a-real-historian), which your
+own historian answers over the network. The request shapes are identical either
+way; only the last hop changes.
 
 ```
 browser ──► POST /api/execute ──► aspy21.AspenClient.read()
@@ -126,9 +129,12 @@ card's field names, types and defaults.
 | --- | --- |
 | `400` | `tags` was supplied but empty — pick at least one tag |
 | `404` | Unknown `operation` |
+| `409` | The operation needs the mock backend and live mode is active |
 
 An empty tag list is refused rather than silently defaulted, so a card can
-never report data for tags you did not choose.
+never report data for tags you did not choose. Likewise `error_handling`, which
+works by forcing the server to return an error status, is refused in live mode
+rather than faked.
 
 ## `GET /api/environment`
 
@@ -138,6 +144,11 @@ confirming what your install actually supports:
 ```json
 {
   "aspy21_version": "0.2.0b15",
+  "mode": "mock",
+  "live": false,
+  "base_url": "http://mock.ip21.local/ProcessData",
+  "datasource": "IP21_DEMO",
+  "auth_configured": false,
   "reader_types": ["RAW", "INT", "SNAPSHOT", "AVG"],
   "include_fields": ["NONE", "STATUS", "DESCRIPTION", "ALL"],
   "output_formats": ["JSON", "DATAFRAME"],
@@ -145,13 +156,26 @@ confirming what your install actually supports:
 }
 ```
 
+`auth_configured` reports only *whether* credentials are set. The password is
+never included in this or any other response.
+
 ## `GET /api/health`
 
-Performs a real snapshot read through the mock, so a `200` proves the whole
-chain works — not merely that the process is up.
+Performs a real call through whichever backend is configured, so a green result
+proves the whole chain works — not merely that the process is up. In mock mode
+that is a snapshot read; in live mode it is a one-result tag browse, which also
+confirms the URL, credentials and datasource are correct.
+
+Always returns HTTP `200`; failures are reported in the body so the reason is
+visible rather than hidden behind an error page.
 
 ```json
-{ "status": "ok", "aspy21_version": "0.2.0b15", "mock_records": 2, "real_network_calls": 0 }
+{ "status": "ok", "aspy21_version": "0.2.0b15", "mode": "mock", "mock_records": 2, "real_network_calls": 0 }
+```
+
+```json
+{ "status": "error", "mode": "live", "base_url": "https://aspen.plant.local/ProcessData",
+  "error": "httpx.HTTPStatusError: Client error '401 Unauthorized' ...", "elapsed_ms": 84.2 }
 ```
 
 ---
@@ -353,15 +377,26 @@ difference.
 ### Authentication
 
 Basic auth via `auth=("user", "password")`, or any `httpx.Auth` object, applied
-to every request. This demo passes no credentials — the mock needs none.
+to every request. In mock mode this demo passes no credentials — the mock needs
+none.
 
 Pointing the code at a real historian is a `base_url` and `auth` change and
-nothing else; every request shape above is what your server would receive.
+nothing else; every request shape above is what your server would receive. The
+dashboard does exactly that in
+[live mode](README.md#live-mode-connecting-to-a-real-historian): set
+`ASPY21_MODE=live`, `ASPY21_BASE_URL` and the credential variables, and
+`live_backend.py` builds the same `AspenClient` over a real socket.
+
+One implementation detail worth knowing if you copy that code: `AspenClient`
+applies its own `auth=` only when it creates the HTTP client itself. If you
+inject `http_client=`, put the auth on the `httpx.Client` instead — otherwise
+it is silently dropped.
 
 ---
 
 ## Coverage in this project
 
 Every endpoint, variant and response shape on this page is exercised by the
-dashboard and asserted by `selftest.py`. See the
+dashboard and asserted by `selftest.py`, and again over real sockets by
+`selftest_live.py`. See the
 [README](README.md#what-each-card-does) for the card-by-card guide.

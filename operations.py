@@ -16,7 +16,9 @@ from typing import Any
 import pandas as pd
 from aspy21 import AspenClient, IncludeFields, OutputFormat, ReaderType
 
-from mock_backend import DATASOURCE, TAGS, MockBackend
+from config import SETTINGS
+from live_backend import Backend
+from mock_backend import TAGS
 
 # Reader types this installed version actually offers. 0.2.0b15 ships
 # RAW/INT/SNAPSHOT/AVG only -- there is no MIN, MAX or RNG.
@@ -148,17 +150,24 @@ def _shape_result(result: Any, output: OutputFormat) -> dict[str, Any]:
 
 
 def _code(call: str) -> str:
+    """Render a runnable snippet for the backend that is actually configured."""
+    imports = "from aspy21 import AspenClient, IncludeFields, OutputFormat, ReaderType\n"
+    auth_line = ""
+    if SETTINGS.live and SETTINGS.auth_configured:
+        imports = "import os\n\n" + imports
+        auth_line = '    auth=(os.environ["ASPY21_USERNAME"], os.environ["ASPY21_PASSWORD"]),\n'
     return (
-        "from aspy21 import AspenClient, IncludeFields, OutputFormat, ReaderType\n\n"
-        f'with AspenClient(\n    base_url="{"http://mock.ip21.local/ProcessData"}",\n'
-        f'    datasource="{DATASOURCE}",\n) as client:\n    {call}'
+        f"{imports}\n"
+        f'with AspenClient(\n    base_url="{SETTINGS.base_url}",\n'
+        f'    datasource="{SETTINGS.datasource}",\n'
+        f"{auth_line}) as client:\n    {call}"
     )
 
 
 # --------------------------------------------------------------------------
 # executors
 # --------------------------------------------------------------------------
-def op_read_raw(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_read_raw(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     tags = _tag_list(p.get("tags"), ["REACTOR_TEMP", "FLOW_101"])
     start, end = p.get("start"), p.get("end")
     include = _enum(IncludeFields, p.get("include"), IncludeFields.NONE)
@@ -189,7 +198,7 @@ def op_read_raw(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_read_int(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_read_int(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     tags = _tag_list(p.get("tags"), ["REACTOR_TEMP", "FLOW_101"])
     start, end = p.get("start"), p.get("end")
     interval = _opt_int(p.get("interval"))
@@ -231,7 +240,7 @@ def op_read_int(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_read_snapshot(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_read_snapshot(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     tags = _tag_list(p.get("tags"), list(TAGS))
     include = _enum(IncludeFields, p.get("include"), IncludeFields.ALL)
     output = _enum(OutputFormat, p.get("output"), OutputFormat.JSON)
@@ -262,7 +271,7 @@ def op_read_snapshot(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_read_aggregate(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_read_aggregate(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     tags = _tag_list(p.get("tags"), ["REACTOR_TEMP"])
     start, end = p.get("start"), p.get("end")
     interval = _opt_int(p.get("interval"))
@@ -311,7 +320,7 @@ def op_read_aggregate(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_search(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_search(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     tag = p.get("tag") or "*"
     description = p.get("description") or None
     include = _enum(IncludeFields, p.get("include"), IncludeFields.NONE)
@@ -355,7 +364,7 @@ def op_search(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_search_hybrid(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_search_hybrid(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     tag = p.get("tag") or "*"
     description = p.get("description") or None
     start, end = p.get("start"), p.get("end")
@@ -395,7 +404,7 @@ def op_search_hybrid(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_include_fields(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_include_fields(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     """Run the same read under several IncludeFields values and compare."""
     tags = _tag_list(p.get("tags"), ["REACTOR_TEMP"])
     start, end = p.get("start"), p.get("end")
@@ -463,7 +472,7 @@ def op_include_fields(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_repeat_timing(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_repeat_timing(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     """Run one identical read twice and report timings + HTTP call count.
 
     The brief asked for a cache demo using ``cache=True`` and
@@ -536,7 +545,7 @@ def op_repeat_timing(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
     }
 
 
-def op_error_handling(p: dict[str, Any], mb: MockBackend) -> dict[str, Any]:
+def op_error_handling(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
     """Deliberately fail the backend and report what surfaces."""
     tags = _tag_list(p.get("tags"), ["REACTOR_TEMP"])
     start, end = p.get("start"), p.get("end")
@@ -631,7 +640,10 @@ def _version_label() -> str:
     return getattr(aspy21, "__version__", "unknown")
 
 
-EXECUTORS: dict[str, Callable[[dict[str, Any], MockBackend], dict[str, Any]]] = {
+# Cards that need a server which fails on command, so they cannot run live.
+MOCK_ONLY_OPERATIONS = frozenset({"error_handling"})
+
+EXECUTORS: dict[str, Callable[[dict[str, Any], Backend], dict[str, Any]]] = {
     "read_raw": op_read_raw,
     "read_int": op_read_int,
     "read_snapshot": op_read_snapshot,
@@ -648,6 +660,18 @@ EXECUTORS: dict[str, Callable[[dict[str, Any], MockBackend], dict[str, Any]]] = 
 # catalogue (drives the rendered form controls)
 # --------------------------------------------------------------------------
 def _tags_field(default: list[str], label: str = "Tags") -> dict[str, Any]:
+    # The demo catalogue only exists in the mock. Against a real historian the
+    # tag names are unknown until the browser has searched, so prefilling the
+    # demo names would hand the user tags their server has never heard of.
+    if SETTINGS.live:
+        return {
+            "name": "tags",
+            "label": label,
+            "type": "tagpicker",
+            "default": [],
+            "options": [],
+            "help": "Browse for tags above, then use 'From browser' or type names.",
+        }
     return {
         "name": "tags",
         "label": label,
@@ -878,6 +902,7 @@ def build_catalog() -> list[dict[str, Any]]:
             "index": 9,
             "title": "Error handling and retry",
             "verb": "DIAGNOSTIC",
+            "mock_only": True,
             "summary": "Force an HTTP failure and watch aspy21's retry and exceptions.",
             "detail": (
                 "AVG goes through XmlHistoryReader._fetch, which carries "

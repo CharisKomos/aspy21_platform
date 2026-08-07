@@ -6,8 +6,14 @@ Run it:
 Then open http://127.0.0.1:8000 for the dashboard, or
 http://127.0.0.1:8000/docs for the generated OpenAPI docs.
 
-All IP.21 traffic is intercepted by ``mock_backend`` -- no server, no
-credentials, no network access.
+Two backends
+------------
+By default (``ASPY21_MODE=mock``) all IP.21 traffic is intercepted by
+``mock_backend`` -- no server, no credentials, no network access.
+
+Set ``ASPY21_MODE=live`` plus ``ASPY21_BASE_URL`` and the dashboard talks to a
+real historian instead; see ``config.py`` for the full variable list. The
+executors are identical in both modes -- only the transport changes.
 """
 
 from __future__ import annotations
@@ -28,13 +34,16 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
-from mock_backend import BASE_URL, DATASOURCE, TAGS, MockBackend
+from config import SETTINGS
+from live_backend import open_backend
+from mock_backend import TAGS
 from operations import (
     AVAILABLE_INCLUDE_FIELDS,
     AVAILABLE_OUTPUT_FORMATS,
     AVAILABLE_READER_TYPES,
     EXECUTORS,
     HAS_CACHE_API,
+    MOCK_ONLY_OPERATIONS,
     build_catalog,
 )
 
@@ -67,13 +76,26 @@ class ExecuteRequest(BaseModel):
 
 
 class Environment(BaseModel):
-    """Versions and capabilities of the installed stack."""
+    """Versions, capabilities and the active backend.
+
+    Never carries the password: only whether one is configured.
+    """
 
     aspy21_version: str
     pandas_version: str
     httpx_version: str
+    mode: str
+    live: bool
     base_url: str
     datasource: str
+    auth_configured: bool
+    username: str
+    password_source: str = Field(
+        "none", description="Where the password came from: environment, credential store, or none."
+    )
+    config_file: str = Field("", description="Settings file in use, if any.")
+    verify_ssl: bool
+    timeout: float
     reader_types: list[str]
     include_fields: list[str]
     output_formats: list[str]
@@ -82,17 +104,13 @@ class Environment(BaseModel):
 
 
 def environment() -> Environment:
-    return Environment(
-        aspy21_version=getattr(aspy21, "__version__", "unknown"),
-        pandas_version=pd.__version__,
-        httpx_version=httpx.__version__,
-        base_url=BASE_URL,
-        datasource=DATASOURCE,
-        reader_types=AVAILABLE_READER_TYPES,
-        include_fields=AVAILABLE_INCLUDE_FIELDS,
-        output_formats=AVAILABLE_OUTPUT_FORMATS,
-        has_cache_api=HAS_CACHE_API,
-        demo_tags=[
+    settings = SETTINGS.public_dict()
+    # The demo catalogue describes the mock's tags. Advertising them against a
+    # real historian would be inventing tags the server does not have.
+    demo_tags = (
+        []
+        if SETTINGS.live
+        else [
             {
                 "name": spec.name,
                 "description": spec.description,
@@ -100,7 +118,27 @@ def environment() -> Environment:
                 "nominal": spec.base,
             }
             for spec in TAGS.values()
-        ],
+        ]
+    )
+    return Environment(
+        aspy21_version=getattr(aspy21, "__version__", "unknown"),
+        pandas_version=pd.__version__,
+        httpx_version=httpx.__version__,
+        mode=settings["mode"],
+        live=settings["live"],
+        base_url=settings["base_url"],
+        datasource=settings["datasource"],
+        auth_configured=settings["auth_configured"],
+        username=settings["username"],
+        password_source=settings["password_source"],
+        config_file=settings["config_file"],
+        verify_ssl=settings["verify_ssl"],
+        timeout=settings["timeout"],
+        reader_types=AVAILABLE_READER_TYPES,
+        include_fields=AVAILABLE_INCLUDE_FIELDS,
+        output_formats=AVAILABLE_OUTPUT_FORMATS,
+        has_cache_api=HAS_CACHE_API,
+        demo_tags=demo_tags,
     )
 
 
@@ -140,6 +178,18 @@ def api_execute(payload: ExecuteRequest) -> dict[str, Any]:
             detail=f"Unknown operation {payload.operation!r}. Known: {sorted(EXECUTORS)}",
         )
 
+    # Some cards need a server that fails on command. Running them live would
+    # either do nothing interesting or fake a failure that never happened.
+    if SETTINGS.live and payload.operation in MOCK_ONLY_OPERATIONS:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Operation {payload.operation!r} needs the mock backend: it works by "
+                "forcing the server to return an error status, which is not something "
+                "to ask of a real historian. Restart with ASPY21_MODE=mock to run it."
+            ),
+        )
+
     params = dict(payload.params)
 
     # An explicitly empty tag list is a user mistake, not a reason to quietly
@@ -161,7 +211,7 @@ def api_execute(payload: ExecuteRequest) -> dict[str, Any]:
             fail_status = 500
 
     started = time.perf_counter()
-    with MockBackend(fail_status=fail_status) as backend:
+    with open_backend(fail_status=fail_status) as backend:
         try:
             result = executor(params, backend)
             ok = True
@@ -236,11 +286,12 @@ def api_tags(
     * no ``description`` -> ``GET {base}/Browse?dataSource=..&tag=..``
     * with ``description`` -> ``POST {base}/SQL`` with ``g="aspy21_search"``
 
-    Only the HTTP response is mocked. Ask for ``include=DESCRIPTION`` so the
-    picker can show what each tag means.
+    In mock mode only the HTTP response is faked; in live mode this really
+    browses your historian. Ask for ``include=DESCRIPTION`` so the picker can
+    show what each tag means.
     """
     started = time.perf_counter()
-    with MockBackend() as backend:
+    with open_backend() as backend:
         client = backend.client()
         try:
             found = client.search(
@@ -251,9 +302,17 @@ def api_tags(
             )
         except Exception as exc:
             logger.exception("tag discovery failed")
+            hint = ""
+            if SETTINGS.live:
+                hint = (
+                    f" Live mode is pointed at {SETTINGS.base_url}"
+                    f" (datasource={SETTINGS.datasource or '<unset>'},"
+                    f" auth={'basic' if SETTINGS.auth_configured else 'none'})."
+                    " Check the base URL, the datasource name and your credentials."
+                )
             raise HTTPException(
                 status_code=502,
-                detail=f"Tag discovery failed: {type(exc).__name__}: {exc}",
+                detail=f"Tag discovery failed: {type(exc).__name__}: {exc}.{hint}",
             ) from exc
         elapsed = round((time.perf_counter() - started) * 1000, 1)
         http_calls = backend.http_calls
@@ -272,10 +331,15 @@ def api_tags(
             tags.append(DiscoveredTag(name=str(entry)))
 
     endpoint = http_calls[0]["kind"] if http_calls else "unknown"
+    auth_line = ""
+    header = "from aspy21 import AspenClient, IncludeFields\n\n"
+    if SETTINGS.live and SETTINGS.auth_configured:
+        header = "import os\n\nfrom aspy21 import AspenClient, IncludeFields\n\n"
+        auth_line = '    auth=(os.environ["ASPY21_USERNAME"], os.environ["ASPY21_PASSWORD"]),\n'
     code = (
-        "from aspy21 import AspenClient, IncludeFields\n\n"
-        f'with AspenClient(\n    base_url="{BASE_URL}",\n'
-        f'    datasource="{DATASOURCE}",\n) as client:\n'
+        f"{header}"
+        f'with AspenClient(\n    base_url="{SETTINGS.base_url}",\n'
+        f'    datasource="{SETTINGS.datasource}",\n{auth_line}) as client:\n'
         f"    tags = client.search(\n        tag={(pattern or '*')!r},\n"
         f"        description={description!r},\n        limit={limit!r},\n"
         "        include=IncludeFields.DESCRIPTION,\n    )"
@@ -295,13 +359,50 @@ def api_tags(
 
 @app.get("/api/health", tags=["metadata"])
 def api_health() -> dict[str, Any]:
-    """Confirm the mocked backend answers and aspy21 can parse it."""
-    with MockBackend() as backend:
-        client = backend.client()
-        snapshot = client.read(list(TAGS)[:2])
-    return {
-        "status": "ok",
+    """Confirm the configured backend answers and aspy21 can parse it.
+
+    Mock mode reads two demo tags. Live mode issues the cheapest real call
+    there is -- a one-result tag browse -- so a green health check means the
+    URL, credentials and datasource are all actually working.
+
+    Always HTTP 200: a failure is reported in the body so the dashboard can
+    show why, rather than surfacing as an opaque error page.
+    """
+    base = {
         "aspy21_version": getattr(aspy21, "__version__", "unknown"),
-        "mock_records": len(snapshot) if isinstance(snapshot, list) else 0,
-        "real_network_calls": 0,
+        "mode": SETTINGS.mode,
+        "base_url": SETTINGS.base_url,
+        "datasource": SETTINGS.datasource,
+        "auth_configured": SETTINGS.auth_configured,
+    }
+
+    if not SETTINGS.live:
+        with open_backend() as backend:
+            client = backend.client()
+            snapshot = client.read(list(TAGS)[:2])
+        return {
+            **base,
+            "status": "ok",
+            "mock_records": len(snapshot) if isinstance(snapshot, list) else 0,
+            "real_network_calls": 0,
+        }
+
+    started = time.perf_counter()
+    try:
+        with open_backend() as backend:
+            client = backend.client()
+            found = client.search(tag="*", limit=1)
+    except Exception as exc:
+        logger.exception("live health check failed")
+        return {
+            **base,
+            "status": "error",
+            "error": f"{type(exc).__module__}.{type(exc).__name__}: {str(exc)[:400]}",
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+        }
+    return {
+        **base,
+        "status": "ok",
+        "tags_visible": len(found or []),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
     }

@@ -11,14 +11,22 @@
   <div class="wrap">
     <h1>aspy21 <span class="muted">operation showcase</span></h1>
     <p class="lede">
-      Every card below calls the real <code>aspy21.AspenClient</code>. HTTP traffic is
-      intercepted by <code>respx</code> in <code>mock_backend.py</code>.
+      Every card below calls the real <code>aspy21.AspenClient</code>.
+      {% if env.live %}
+        HTTP traffic goes to your historian over the network.
+      {% else %}
+        HTTP traffic is intercepted by <code>respx</code> in <code>mock_backend.py</code>.
+      {% endif %}
     </p>
     <div class="chips">
       <span class="chip">aspy21 {{ env.aspy21_version }}</span>
       <span class="chip">pandas {{ env.pandas_version }}</span>
       <span class="chip">httpx {{ env.httpx_version }}</span>
+      {% if env.live %}
+      <span class="chip chip-live">live &middot; real historian</span>
+      {% else %}
       <span class="chip chip-mock">no network &middot; no credentials</span>
+      {% endif %}
       <a class="chip chip-link" href="/docs">OpenAPI docs &rarr;</a>
     </div>
   </div>
@@ -26,12 +34,27 @@
 
 <main class="wrap">
 
+  {% if env.live %}
+  <section class="banner banner-live">
+    <strong>Live mode &mdash; this is real process data.</strong>
+    Connected to <code>{{ env.base_url }}</code>,
+    datasource <code>{{ env.datasource or 'server default' }}</code>,
+    auth <code>{{ 'basic (' ~ env.username ~ ')' if env.auth_configured else 'none' }}</code>,
+    password from <code>{{ env.password_source }}</code>,
+    TLS verification <code>{{ 'on' if env.verify_ssl else 'OFF' }}</code>,
+    timeout <code>{{ env.timeout }}s</code>.
+    Every Execute issues a real query against the historian. Start with narrow
+    time ranges &mdash; a wide RAW read over many tags can return a great deal of data.
+  </section>
+  {% else %}
   <section class="banner">
     <strong>All data is simulated.</strong>
     <code>{{ env.base_url }}</code> does not resolve to anything; requests are answered
     in-process. Datasource <code>{{ env.datasource }}</code>.
     Values carry random jitter, so repeated executions differ.
+    Run <code>python setup_live.py</code> to point this dashboard at a real historian.
   </section>
+  {% endif %}
 
   <section class="panel" id="tag-browser">
     <h2>Tag browser &mdash; discover tags from IP.21</h2>
@@ -72,6 +95,7 @@
       </button>
     </div>
 
+    {% if env.demo_tags %}
     <details class="known-tags">
       <summary>Built-in demo tag catalogue ({{ env.demo_tags|length }})</summary>
       <table class="tags-table">
@@ -88,6 +112,7 @@
         </tbody>
       </table>
     </details>
+    {% endif %}
 
     <p class="fineprint">
       <strong>ReaderType</strong> in this build:
@@ -102,7 +127,8 @@
   </section>
 
   {% for op in catalog %}
-  <article class="op" data-op="{{ op.id }}" id="op-{{ op.id }}">
+  {% set disabled = env.live and op.mock_only %}
+  <article class="op{{ ' op-disabled' if disabled }}" data-op="{{ op.id }}" id="op-{{ op.id }}">
     <button class="op-head" type="button" aria-expanded="false">
       <span class="verb verb-{{ op.verb|lower }}">{{ op.verb }}</span>
       <span class="op-index">{{ op.index }}</span>
@@ -113,6 +139,15 @@
 
     <div class="op-body" hidden>
       <p class="op-detail">{{ op.detail }}</p>
+
+      {% if disabled %}
+      <p class="op-unavailable">
+        <strong>Not available in live mode.</strong>
+        This card works by forcing the server to answer with an error status, which
+        the mock backend can do and a real historian should not be asked to. Restart
+        with <code>ASPY21_MODE=mock</code> to see the retry behaviour.
+      </p>
+      {% endif %}
 
       <div class="params">
         {% for field in op.fields %}
@@ -180,7 +215,8 @@
       </div>
 
       <div class="actions">
-        <button class="btn btn-exec" type="button" data-op="{{ op.id }}">Execute</button>
+        <button class="btn btn-exec" type="button" data-op="{{ op.id }}"
+                {{ 'disabled' if disabled }}>Execute</button>
         <button class="btn btn-ghost btn-reset" type="button">Reset</button>
         <span class="status" role="status" aria-live="polite"></span>
       </div>

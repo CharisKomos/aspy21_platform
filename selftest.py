@@ -12,7 +12,13 @@ Exits 0 on success, 1 on any failure.
 from __future__ import annotations
 
 import logging
+import os
 import sys
+
+# Force the mocked backend before main is imported. Without this, a saved live
+# connection (aspy21.local.json) would send this test's reads to a real
+# historian.
+os.environ["ASPY21_MODE"] = "mock"
 
 from fastapi.testclient import TestClient
 
