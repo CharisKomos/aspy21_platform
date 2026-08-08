@@ -44,6 +44,7 @@ All of these are also browsable, with live "Try it out" forms, at
 | `GET` | `/api/catalog` | Card definitions and their form fields |
 | `GET` | `/api/tags` | **Tag discovery** — runs a real `client.search()` |
 | `POST` | `/api/execute` | **Run one operation** — runs a real `client.read()` / `search()` |
+| `POST` | `/api/v1/series` | **Ingest contract** — a windowed read, rows only, for machine callers |
 | `GET` | `/api/health` | Liveness plus a round-trip through the mock |
 
 ## `GET /api/tags`
@@ -177,6 +178,108 @@ visible rather than hidden behind an error page.
 { "status": "error", "mode": "live", "base_url": "https://aspen.plant.local/ProcessData",
   "error": "httpx.HTTPStatusError: Client error '401 Unauthorized' ...", "elapsed_ms": 84.2 }
 ```
+
+## `POST /api/v1/series`
+
+The **ingest contract**: the same `client.read()` the cards make, with the
+teaching material removed. `/api/execute` answers a person — notes, a code
+snippet, every request body. This answers a poller, several times an hour, and
+returns rows only.
+
+**Request**
+
+```json
+{
+  "tags": ["FLOW_101", "REACTOR_TEMP"],
+  "from": "2026-08-08T00:00:00Z",
+  "to": "2026-08-08T06:00:00Z",
+  "interval_seconds": 60,
+  "include_status": true,
+  "max_rows": 200000
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `tags` | *(required)* | At least one. An empty list is a `422`, never a silent default |
+| `from` | *(required)* | **Exclusive** lower bound — pass the newest timestamp you already hold |
+| `to` | *(required)* | Inclusive upper bound |
+| `interval_seconds` | `null` | Grid spacing for an interpolated (`INT`) read. Omit or `0` for raw (`RAW`) points |
+| `include_status` | `true` | Ask for the per-reading quality code |
+| `max_rows` | `200000` | Refuse rather than return more |
+
+**The window is half-open, `(from, to]`.** A reading exactly on the lower bound
+is one the caller already has, so excluding it makes a poll idempotent: a failed
+pull is retried with the same cursor and no row arrives twice.
+
+**Response**
+
+```json
+{
+  "ok": true, "mode": "live", "live": true,
+  "rows": [ { "tag": "FLOW_101", "timestamp": "2026-08-08T00:01:00Z", "value": 42.1, "status": 0 } ],
+  "row_count": 1, "tags_requested": 2, "tags_returned": 1,
+  "from": "2026-08-08T00:00:00Z", "to": "2026-08-08T06:00:00Z",
+  "interval_seconds": 60, "read_type": "INT", "timezone": "Europe/Athens",
+  "skipped_non_numeric": 0, "skipped_out_of_window": 0, "duplicates_dropped": 0,
+  "elapsed_ms": 812.4, "http_call_count": 1
+}
+```
+
+Rows are sorted by `(tag, timestamp)` and de-duplicated on that pair. Readings
+that are missing, `NaN`, or unparseable are dropped and counted rather than
+passed on as nulls — a chart cannot use them and a database column may refuse
+them. `mode` is always reported, so simulated data can never be mistaken for
+plant data.
+
+### Timestamps
+
+IP.21 answers in the historian machine's **local wall time with no zone
+attached**. A consumer that stores UTC and takes those values verbatim is wrong
+by a fixed offset, forever, in a way no chart reveals.
+
+So the boundary is explicit both ways. `from`/`to` are read as aware instants (a
+token with no zone is taken as UTC), converted into the historian's zone to
+build the query, and every returned timestamp is converted back and rendered
+with an explicit offset. Set **`ASPY21_TIMEZONE`** to the historian's zone —
+`UTC` (default), `local`, or an IANA name like `Europe/Athens`. Live mode logs a
+warning at startup while it is still `UTC`, because that is rarely right for a
+real plant.
+
+### Failures
+
+Every failure carries a machine-readable `error_kind`, so a caller can tell a
+lost connection from a wrong password without parsing prose:
+
+```json
+{ "detail": { "error_kind": "auth", "message": "The historian rejected the credentials (HTTP 401).",
+              "mode": "live", "base_url": "…", "exception": "httpx.HTTPStatusError" } }
+```
+
+| Status | `error_kind` | Cause |
+| --- | --- | --- |
+| `400` | `bad_request` | No usable tags, or `from` is not before `to` |
+| `422` | *(FastAPI validation)* | Malformed body — empty `tags`, unparseable datetime |
+| `413` | `too_many_rows` | The result exceeds `max_rows`. Ask for a shorter window, a coarser interval, or fewer tags |
+| `500` | `configuration` | `ASPY21_TIMEZONE` names a zone this machine cannot resolve |
+| `502` | `connection` | Could not reach the historian |
+| `502` | `timeout` | It did not answer in time |
+| `502` | `auth` | Credentials rejected (401/403) |
+| `502` | `not_found` | No ProcessData endpoint at that URL (404) |
+| `502` | `upstream` | Any other HTTP status from the historian |
+| `502` | `configuration` | aspy21 raised `ValueError` — typically a missing datasource |
+| `502` | `unknown` | Anything else |
+
+`tenacity.RetryError` is unwrapped before classification, so a retried failure
+reports the reason it actually failed rather than the retry wrapper.
+
+**One limit worth knowing:** `max_rows` caps the *response*, not memory. The
+library materialises the full result before this endpoint can count it, so an
+enormous window is still fetched once before being refused. Size the window on
+the caller's side.
+
+Works in mock mode, so an ingest client can be developed and tested end to end
+with no historian, no credentials and no network.
 
 ---
 

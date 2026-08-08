@@ -7,6 +7,10 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 
+# Visual Studio's per-user workspace state (open documents, window layout).
+# Local to whoever opened the folder, and rewritten constantly.
+.vs/
+
 # Your live-historian connection settings, written by setup_live.py.
 # Never contains a password -- that goes to the OS credential store -- but it
 # does name your internal server, so it stays out of the repository.

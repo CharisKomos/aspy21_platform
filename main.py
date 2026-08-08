@@ -46,6 +46,7 @@ from operations import (
     MOCK_ONLY_OPERATIONS,
     build_catalog,
 )
+from series import router as series_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aspy21-demo")
@@ -64,6 +65,10 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# The machine-facing ingest contract. Separate from the dashboard's own API on
+# purpose: /api/execute answers a person, /api/v1/series answers a poller.
+app.include_router(series_router)
 
 
 class ExecuteRequest(BaseModel):
@@ -96,6 +101,9 @@ class Environment(BaseModel):
     config_file: str = Field("", description="Settings file in use, if any.")
     verify_ssl: bool
     timeout: float
+    timezone: str = Field(
+        "UTC", description="Zone IP.21's naive timestamps are read in (see /api/v1/series)."
+    )
     reader_types: list[str]
     include_fields: list[str]
     output_formats: list[str]
@@ -134,6 +142,7 @@ def environment() -> Environment:
         config_file=settings["config_file"],
         verify_ssl=settings["verify_ssl"],
         timeout=settings["timeout"],
+        timezone=settings["timezone"],
         reader_types=AVAILABLE_READER_TYPES,
         include_fields=AVAILABLE_INCLUDE_FIELDS,
         output_formats=AVAILABLE_OUTPUT_FORMATS,

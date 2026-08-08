@@ -33,6 +33,12 @@ Environment variables
 ``ASPY21_PASSWORD``         HTTP Basic password. Overrides the credential
                             store when set.
 ``ASPY21_TIMEOUT``          Request timeout in seconds (default 30).
+``ASPY21_TIMEZONE``         The zone IP.21 reports timestamps in: ``UTC``
+                            (default), ``local``, or an IANA name such as
+                            ``Europe/Athens``. IP.21 answers in the historian
+                            machine's local wall time with no zone attached, so
+                            getting this wrong shifts every reading by a fixed
+                            offset -- silently. Only ``/api/v1/series`` uses it.
 ``ASPY21_VERIFY_SSL``       ``false`` disables certificate verification.
 ``ASPY21_CA_BUNDLE``        Path to a CA bundle, for internal CAs. Preferred
                             over disabling verification.
@@ -70,7 +76,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).with_name("aspy21.local.json")
 # Keys setup_live.py is allowed to write. Anything else in the file is ignored
 # rather than silently trusted.
 _FILE_KEYS = frozenset(
-    {"mode", "base_url", "datasource", "username", "timeout", "verify_ssl", "ca_bundle"}
+    {"mode", "base_url", "datasource", "username", "timeout", "verify_ssl", "ca_bundle", "timezone"}
 )
 
 
@@ -136,6 +142,10 @@ class Settings:
     timeout: float
     verify_ssl: bool
     ca_bundle: str
+    # The zone IP.21's naive timestamps are in. Only /api/v1/series needs it:
+    # the dashboard displays whatever the historian said, but an ingest client
+    # stores UTC and cannot guess the offset.
+    timezone: str = "UTC"
     # Where the password came from, for display and troubleshooting. Never the
     # value itself.
     password_source: str = "none"
@@ -177,6 +187,7 @@ class Settings:
             "timeout": self.timeout,
             "verify_ssl": self.verify_ssl,
             "ca_bundle": self.ca_bundle,
+            "timezone": self.timezone,
             "config_file": self.config_file,
         }
 
@@ -218,6 +229,9 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
             timeout=10.0,
             verify_ssl=True,
             ca_bundle="",
+            # The mock generates naive timestamps in the host's own zone, so
+            # 'local' is what makes a mock read round-trip on any machine.
+            timezone=_env("ASPY21_TIMEZONE") or "local",
             config_file=path if saved else "",
         )
 
@@ -276,6 +290,7 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         timeout=timeout,
         verify_ssl=verify_ssl,
         ca_bundle=ca_bundle,
+        timezone=setting("ASPY21_TIMEZONE", "timezone", "UTC"),
         password_source=password_source,
         config_file=path if saved else "",
     )
@@ -301,6 +316,12 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         logger.warning(
             "No datasource configured. Reads use the server default, but "
             "client.search() (the tag browser) usually requires a datasource."
+        )
+    if settings.timezone.upper() == "UTC":
+        logger.warning(
+            "ASPY21_TIMEZONE is UTC. IP.21 answers in the historian machine's local wall "
+            "time, so if that machine is not on UTC every reading /api/v1/series returns "
+            "is shifted by a fixed offset. Set it to the plant's zone, e.g. Europe/Athens."
         )
 
     return settings

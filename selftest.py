@@ -11,6 +11,7 @@ Exits 0 on success, 1 on any failure.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import os
 import sys
@@ -296,6 +297,88 @@ check(values[0] != values[1], f"repeat snapshots differ: {values}")
 print("\nerror handling for bad input")
 res = client.post("/api/execute", json={"operation": "does_not_exist", "params": {}})
 check(res.status_code == 404, "unknown operation returns 404")
+
+print("\ningest contract (/api/v1/series)")
+
+
+def series(**body: object) -> tuple[int, dict]:
+    res = client.post("/api/v1/series", json=body)
+    try:
+        return res.status_code, res.json()
+    except ValueError:
+        return res.status_code, {}
+
+
+def stamp_of(text: str) -> dt.datetime:
+    """Python 3.10's fromisoformat rejects a trailing 'Z'; CI runs 3.10."""
+    return dt.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+
+
+# The window is anchored in UTC, and must round-trip whatever zone the host is
+# in: mock timestamps are naive local, so a tz slip here empties the response.
+WINDOW_END = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+WINDOW_START = WINDOW_END - dt.timedelta(hours=1)
+
+status, body = series(
+    tags=["REACTOR_TEMP", "FLOW_101"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+    interval_seconds=60,
+)
+check(status == 200, f"POST /api/v1/series returns 200 (got {status})")
+check(body.get("row_count", 0) > 0, f"rows come back ({body.get('row_count')} of them)")
+check(body.get("mode") == "mock", "mode is reported so simulated data is never silent")
+check(body.get("read_type") == "INT", "an interval selects the interpolated reader")
+check(body.get("tags_returned") == 2, "both requested tags returned data")
+
+rows = body.get("rows") or []
+check(
+    all(set(r) >= {"tag", "timestamp", "value"} for r in rows), "every row has tag/timestamp/value"
+)
+stamps = [stamp_of(r["timestamp"]) for r in rows]
+check(all(s.tzinfo is not None for s in stamps), "timestamps carry an explicit offset")
+check(
+    all(WINDOW_START < s <= WINDOW_END for s in stamps),
+    "every row falls inside the half-open (from, to] window",
+)
+check(
+    rows == sorted(rows, key=lambda r: (r["tag"], r["timestamp"])),
+    "rows are sorted by (tag, timestamp)",
+)
+check(
+    len({(r["tag"], r["timestamp"]) for r in rows}) == len(rows),
+    "no duplicate (tag, timestamp) pairs survive",
+)
+
+status, _ = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+)
+check(status == 200, "no interval is allowed (raw points)")
+
+status, body = series(tags=[], **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()})
+check(status == 422, f"an empty tag list is rejected by validation (got {status})")
+
+status, body = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_END.isoformat(), "to": WINDOW_START.isoformat()},
+)
+check(status == 400, f"an inverted window is rejected (got {status})")
+check(
+    (body.get("detail") or {}).get("error_kind") == "bad_request",
+    "rejections carry a machine-readable error_kind",
+)
+
+status, body = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+    interval_seconds=60,
+    max_rows=1,
+)
+check(status == 413, f"exceeding max_rows is refused rather than truncated (got {status})")
+check(
+    (body.get("detail") or {}).get("error_kind") == "too_many_rows",
+    "the refusal names the reason",
+)
 
 print("\n" + "=" * 60)
 if failures:

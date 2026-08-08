@@ -20,3 +20,8 @@ respx>=0.22
 # Manager) instead of a file. Only setup_live.py writes; config.py reads.
 # The app degrades to ASPY21_PASSWORD if this is missing.
 keyring>=25.0
+
+# zoneinfo is stdlib, but Windows ships no IANA tz database for it to read. Only
+# needed if ASPY21_TIMEZONE names a zone (Europe/Athens); 'UTC' and 'local' work
+# without it. Harmless elsewhere, so it is not conditional.
+tzdata>=2024.1
