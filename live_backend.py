@@ -198,8 +198,14 @@ class LiveBackend:
             self.calls.append(call)
 
 
-def open_backend(fail_status: int | None = None) -> Backend:
-    """Return the backend the current configuration calls for."""
-    if SETTINGS.live:
-        return LiveBackend()
+def open_backend(fail_status: int | None = None, settings: Settings | None = None) -> Backend:
+    """Return the backend the configuration calls for.
+
+    ``settings`` overrides the process-wide ones for a single request, which is how
+    one gateway serves several historians: the caller owns the connection, this
+    process just uses it and forgets it.
+    """
+    active = settings or SETTINGS
+    if active.live:
+        return LiveBackend(settings=active)
     return MockBackend(fail_status=fail_status)

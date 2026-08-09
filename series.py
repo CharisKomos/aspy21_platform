@@ -45,6 +45,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import SETTINGS
+from connection import ConnectionError_, ConnectionOverride, settings_or_default, test
 from live_backend import open_backend
 
 logger = logging.getLogger("aspy21-demo.series")
@@ -84,6 +85,13 @@ class SeriesRequest(BaseModel):
     )
     include_status: bool = Field(True, description="Ask for the per-reading quality code.")
     max_rows: int = Field(DEFAULT_MAX_ROWS, gt=0, description="Refuse rather than return more.")
+    connection: ConnectionOverride | None = Field(
+        None,
+        description=(
+            "Read from this historian instead of the one configured at startup. Lets one "
+            "gateway serve several plants; nothing about it is stored."
+        ),
+    )
     simulate_failure: int | None = Field(
         None,
         ge=400,
@@ -134,14 +142,14 @@ class SeriesResponse(BaseModel):
 # --------------------------------------------------------------------------
 # time
 # --------------------------------------------------------------------------
-def historian_tz() -> dt.tzinfo:
+def historian_tz(settings: Any = None) -> dt.tzinfo:
     """The zone IP.21 reports its timestamps in.
 
     ``UTC`` (the default) and ``local`` need no tz database. Any other value is
     an IANA name and needs one -- present on Linux, and on Windows only if the
     ``tzdata`` package is installed.
     """
-    name = (getattr(SETTINGS, "timezone", "") or "UTC").strip()
+    name = (getattr(settings or SETTINGS, "timezone", "") or "UTC").strip()
     if name.upper() == "UTC":
         return dt.timezone.utc
     if name.lower() == "local":
@@ -259,30 +267,39 @@ def _is_tls_failure(exc: BaseException) -> bool:
     return "certificate verify failed" in str(exc).lower() or "ssl" in type(exc).__name__.lower()
 
 
-def classify(exc: BaseException) -> tuple[str, str]:
+def classify(exc: BaseException, settings: Any = None) -> tuple[str, str]:
     """``(error_kind, message)``.
 
     The kind is the part a caller branches on -- "connection lost" and "the
     password is wrong" want different words on a status badge and different
     retry behaviour, and neither is recoverable by trying harder immediately.
+
+    ``settings`` names the server in the message. It matters once a request can
+    carry its own connection: reporting the process-wide URL would send someone to
+    check a machine the failing read never touched.
     """
+    active = settings or SETTINGS
     root = unwrap(exc)
     if isinstance(root, (httpx.ConnectError, httpx.ConnectTimeout)) and _is_tls_failure(root):
         return "tls", (
-            f"The TLS certificate for {SETTINGS.base_url} was rejected: {root}. If the "
-            "historian uses an internal CA, point ASPY21_CA_BUNDLE at its bundle; a "
-            "certificate is issued to a hostname, so an IP address never validates."
+            f"The TLS certificate for {active.base_url} was rejected: {root}. If the "
+            "historian uses an internal CA, supply a CA bundle; a certificate is issued "
+            "to a hostname, so an IP address never validates."
         )
     if isinstance(root, (httpx.ConnectError, httpx.ConnectTimeout)):
-        return "connection", f"Could not reach the historian at {SETTINGS.base_url}: {root}"
+        return "connection", f"Could not reach the historian at {active.base_url}: {root}"
     if isinstance(root, httpx.TimeoutException):
-        return "timeout", f"The historian did not answer within {SETTINGS.timeout}s: {root}"
+        return "timeout", f"The historian did not answer within {active.timeout}s: {root}"
     if isinstance(root, httpx.HTTPStatusError):
         code = root.response.status_code
         if code in (401, 403):
-            return "auth", f"The historian rejected the credentials (HTTP {code})."
+            return "auth", (
+                f"The historian rejected the credentials (HTTP {code}). If the site uses "
+                "Windows Integrated authentication, try auth_scheme=ntlm with a "
+                "domain-qualified username."
+            )
         if code == 404:
-            return "not_found", f"No ProcessData endpoint at {SETTINGS.base_url} (HTTP {code})."
+            return "not_found", f"No ProcessData endpoint at {active.base_url} (HTTP {code})."
         return "upstream", f"The historian returned HTTP {code}."
     if isinstance(root, httpx.HTTPError):
         return "connection", f"{type(root).__name__}: {root}"
@@ -295,6 +312,74 @@ def classify(exc: BaseException) -> tuple[str, str]:
 # --------------------------------------------------------------------------
 # endpoint
 # --------------------------------------------------------------------------
+class TagBrowseRequest(BaseModel):
+    """Discover tags, optionally against a caller-supplied historian."""
+
+    pattern: str = Field("*", description="Tag name pattern. * matches any run, ? exactly one.")
+    limit: int = Field(500, gt=0, le=10000)
+    connection: ConnectionOverride | None = None
+
+
+class ConnectionTestRequest(BaseModel):
+    connection: ConnectionOverride
+
+
+@router.post("/tags", tags=["ingest"])
+def api_v1_tags(payload: TagBrowseRequest) -> dict[str, Any]:
+    """Tag names only — the machine-facing counterpart of ``GET /api/tags``.
+
+    A POST because it carries a connection: the browse itself is a read.
+    """
+    try:
+        active = settings_or_default(payload.connection)
+    except ConnectionError_ as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error_kind": exc.kind, "message": exc.message, "failed_step": exc.step},
+        ) from exc
+
+    started = time.perf_counter()
+    with open_backend(settings=active) as backend:
+        try:
+            found = backend.client().search(
+                tag=payload.pattern or "*", limit=payload.limit, include=IncludeFields.DESCRIPTION
+            )
+        except Exception as exc:
+            kind, message = classify(exc, active)
+            logger.warning("tag browse failed (%s): %s", kind, exc)
+            raise HTTPException(
+                status_code=502,
+                detail={"error_kind": kind, "message": message, "base_url": active.base_url},
+            ) from exc
+
+    tags = []
+    for entry in found or []:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description") or "")
+        else:
+            name, description = str(entry).strip(), ""
+        if name:
+            tags.append({"name": name, "description": description})
+
+    return {
+        "tags": tags,
+        "count": len(tags),
+        "mode": active.mode,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
+
+
+@router.post("/connection/test", tags=["ingest"])
+def api_connection_test(payload: ConnectionTestRequest) -> dict[str, Any]:
+    """Check a connection before saving it, and say which step failed.
+
+    Always HTTP 200: the caller wants a verdict to show a user, not an exception
+    to catch. Look at ``ok`` and, when false, ``failed_step`` and ``error_kind``.
+    """
+    return test(payload.connection)
+
+
 @router.post("/series", response_model=SeriesResponse)
 def api_series(payload: SeriesRequest) -> SeriesResponse:
     """Read one window of history for a set of tags.
@@ -326,7 +411,7 @@ def api_series(payload: SeriesRequest) -> SeriesResponse:
     # Forcing a failure is a testing affordance, not a feature of the data path.
     # Refused live for the same reason the error-handling card is: asking a real
     # historian to fail is not a thing to do, and faking it would prove nothing.
-    if payload.simulate_failure is not None and SETTINGS.live:
+    if payload.simulate_failure is not None and (SETTINGS.live or payload.connection is not None):
         raise HTTPException(
             status_code=409,
             detail={
@@ -338,13 +423,24 @@ def api_series(payload: SeriesRequest) -> SeriesResponse:
             },
         )
 
-    tz = historian_tz()
+    # A per-request connection makes this gateway multi-tenant: the calling
+    # application owns the settings, so it can point each of its projects at a
+    # different plant without a container per historian.
+    try:
+        active = settings_or_default(payload.connection)
+    except ConnectionError_ as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error_kind": exc.kind, "message": exc.message, "failed_step": exc.step},
+        ) from exc
+
+    tz = historian_tz(active)
     interval = payload.interval_seconds or None
     read_type = ReaderType.INT if interval else ReaderType.RAW
     include = IncludeFields.STATUS if payload.include_status else IncludeFields.NONE
 
     started = time.perf_counter()
-    with open_backend(fail_status=payload.simulate_failure) as backend:
+    with open_backend(fail_status=payload.simulate_failure, settings=active) as backend:
         client = backend.client()
         try:
             result = client.read(
@@ -357,15 +453,15 @@ def api_series(payload: SeriesRequest) -> SeriesResponse:
                 output=OutputFormat.JSON,
             )
         except Exception as exc:
-            kind, message = classify(exc)
+            kind, message = classify(exc, active)
             logger.warning("series read failed (%s): %s", kind, exc)
             raise HTTPException(
                 status_code=502,
                 detail={
                     "error_kind": kind,
                     "message": message,
-                    "mode": SETTINGS.mode,
-                    "base_url": SETTINGS.base_url,
+                    "mode": active.mode,
+                    "base_url": active.base_url,
                     "exception": f"{type(unwrap(exc)).__module__}.{type(unwrap(exc)).__name__}",
                 },
             ) from exc
@@ -426,8 +522,8 @@ def api_series(payload: SeriesRequest) -> SeriesResponse:
 
     return SeriesResponse(
         ok=True,
-        mode=SETTINGS.mode,
-        live=SETTINGS.live,
+        mode=active.mode,
+        live=active.live,
         rows=rows,
         row_count=len(rows),
         tags_requested=len(tags),
@@ -436,7 +532,7 @@ def api_series(payload: SeriesRequest) -> SeriesResponse:
         to=end,
         interval_seconds=interval,
         read_type=read_type.name,
-        timezone=getattr(SETTINGS, "timezone", "UTC") or "UTC",
+        timezone=getattr(active, "timezone", "UTC") or "UTC",
         skipped_non_numeric=skipped_non_numeric,
         skipped_out_of_window=skipped_out_of_window,
         duplicates_dropped=duplicates_dropped,

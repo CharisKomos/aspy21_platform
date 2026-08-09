@@ -45,6 +45,8 @@ All of these are also browsable, with live "Try it out" forms, at
 | `GET` | `/api/tags` | **Tag discovery** — runs a real `client.search()` |
 | `POST` | `/api/execute` | **Run one operation** — runs a real `client.read()` / `search()` |
 | `POST` | `/api/v1/series` | **Ingest contract** — a windowed read, rows only, for machine callers |
+| `POST` | `/api/v1/tags` | Tag names only — the machine-facing counterpart of `GET /api/tags` |
+| `POST` | `/api/v1/connection/test` | Check a connection and report which step failed |
 | `GET` | `/api/health` | Liveness plus a round-trip through the mock |
 
 ## `GET /api/tags`
@@ -280,6 +282,68 @@ the caller's side.
 
 Works in mock mode, so an ingest client can be developed and tested end to end
 with no historian, no credentials and no network.
+
+## Serving more than one historian
+
+`/api/v1/series` and `/api/v1/tags` both accept an optional `connection` object.
+Without one they use the settings this process started with — the demo, unchanged.
+With one, that request alone reads the historian described:
+
+```json
+{
+  "tags": ["FLOW_101"],
+  "from": "2026-08-08T00:00:00Z",
+  "to": "2026-08-08T06:00:00Z",
+  "connection": {
+    "host": "aspen-hist01",
+    "datasource": "IP21",
+    "username": "DOMAIN\\svc",
+    "password": "…",
+    "auth_scheme": "ntlm",
+    "verify_ssl": true,
+    "timezone": "Europe/Athens"
+  }
+}
+```
+
+`host` takes a hostname, an IP, `host:port`, or a full URL — anything short of a
+full URL is resolved by probing the ProcessData paths Aspen actually uses, so a
+caller need not know which one a site exposes.
+
+**Nothing is stored.** The connection belongs to the calling application, password
+included; this process uses it for one request and forgets it. That also means
+credentials cross the network on every call, so put the gateway on a private
+network, or in front of TLS.
+
+## `POST /api/v1/tags`
+
+Tag discovery for machine callers: `{ "pattern": "FLOW_*", "limit": 500,
+"connection": { … } }` → `{ "tags": [{ "name", "description" }], "count", "mode" }`.
+A POST rather than a GET because it carries a connection.
+
+## `POST /api/v1/connection/test`
+
+Checks a connection before anything is saved against it, because "it does not
+work" is not an actionable answer. Walks the chain in order and **stops at the
+first step that fails**:
+
+`settings` → `network` → `endpoint` → `credentials` → `datasource`
+
+```json
+{ "connection": { "host": "aspen-hist01", "datasource": "IP21", "username": "svc", "password": "…" } }
+```
+
+Always HTTP `200` — the caller wants a verdict to show a user, not an exception to
+catch. Read `ok`, and when false `failed_step` and `message`:
+
+```json
+{ "ok": false, "failed_step": "network", "error_kind": "connection",
+  "message": "Cannot open a connection to aspen-hist01:443 — …",
+  "steps": [ { "step": "network", "ok": false, "detail": "…" } ] }
+```
+
+A success also reports the `base_url` that was discovered and how many tags a
+browse returned, which is what confirms the datasource name is right.
 
 ---
 

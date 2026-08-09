@@ -190,6 +190,22 @@ actually failed rather than the retry wrapper.
 **Oversized results are refused, not truncated.** A silently short answer would
 advance the caller's cursor past real data. Ask for a shorter window instead.
 
+### More than one historian
+
+`/api/v1/series` and `/api/v1/tags` accept an optional `connection` object. Without
+one they use the settings this process started with; with one, that request reads
+the historian described — so a single gateway can serve an application whose users
+configure a connection per project, rather than needing a container per plant.
+
+`POST /api/v1/connection/test` checks such a connection before anything is saved
+against it, walking `settings → network → endpoint → credentials → datasource` and
+stopping at the first failure, so the answer names the step rather than leaving
+someone to work backwards from a 401.
+
+Nothing about a supplied connection is stored here — it belongs to the caller,
+password included. That also means credentials cross the network on every call, so
+keep the gateway on a private network or behind TLS.
+
 Full request/response reference, including the error table:
 [ENDPOINTS.md](ENDPOINTS.md#post-apiv1series).
 
