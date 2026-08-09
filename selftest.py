@@ -11,9 +11,13 @@ Exits 0 on success, 1 on any failure.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import os
+import ssl
 import sys
+
+import tenacity
 
 # Force the mocked backend before main is imported. Without this, a saved live
 # connection (aspy21.local.json) would send this test's reads to a real
@@ -296,6 +300,161 @@ check(values[0] != values[1], f"repeat snapshots differ: {values}")
 print("\nerror handling for bad input")
 res = client.post("/api/execute", json={"operation": "does_not_exist", "params": {}})
 check(res.status_code == 404, "unknown operation returns 404")
+
+print("\ningest contract (/api/v1/series)")
+
+
+def series(**body: object) -> tuple[int, dict]:
+    res = client.post("/api/v1/series", json=body)
+    try:
+        return res.status_code, res.json()
+    except ValueError:
+        return res.status_code, {}
+
+
+def stamp_of(text: str) -> dt.datetime:
+    """Python 3.10's fromisoformat rejects a trailing 'Z'; CI runs 3.10."""
+    return dt.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+
+
+# The window is anchored in UTC, and must round-trip whatever zone the host is
+# in: mock timestamps are naive local, so a tz slip here empties the response.
+WINDOW_END = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
+WINDOW_START = WINDOW_END - dt.timedelta(hours=1)
+
+status, body = series(
+    tags=["REACTOR_TEMP", "FLOW_101"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+    interval_seconds=60,
+)
+check(status == 200, f"POST /api/v1/series returns 200 (got {status})")
+check(body.get("row_count", 0) > 0, f"rows come back ({body.get('row_count')} of them)")
+check(body.get("mode") == "mock", "mode is reported so simulated data is never silent")
+check(body.get("read_type") == "INT", "an interval selects the interpolated reader")
+check(body.get("tags_returned") == 2, "both requested tags returned data")
+
+rows = body.get("rows") or []
+check(
+    all(set(r) >= {"tag", "timestamp", "value"} for r in rows), "every row has tag/timestamp/value"
+)
+stamps = [stamp_of(r["timestamp"]) for r in rows]
+check(all(s.tzinfo is not None for s in stamps), "timestamps carry an explicit offset")
+check(
+    all(WINDOW_START < s <= WINDOW_END for s in stamps),
+    "every row falls inside the half-open (from, to] window",
+)
+check(
+    rows == sorted(rows, key=lambda r: (r["tag"], r["timestamp"])),
+    "rows are sorted by (tag, timestamp)",
+)
+check(
+    len({(r["tag"], r["timestamp"]) for r in rows}) == len(rows),
+    "no duplicate (tag, timestamp) pairs survive",
+)
+
+status, _ = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+)
+check(status == 200, "no interval is allowed (raw points)")
+
+status, body = series(tags=[], **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()})
+check(status == 422, f"an empty tag list is rejected by validation (got {status})")
+
+status, body = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_END.isoformat(), "to": WINDOW_START.isoformat()},
+)
+check(status == 400, f"an inverted window is rejected (got {status})")
+check(
+    (body.get("detail") or {}).get("error_kind") == "bad_request",
+    "rejections carry a machine-readable error_kind",
+)
+
+status, body = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+    interval_seconds=60,
+    max_rows=1,
+)
+check(status == 413, f"exceeding max_rows is refused rather than truncated (got {status})")
+check(
+    (body.get("detail") or {}).get("error_kind") == "too_many_rows",
+    "the refusal names the reason",
+)
+
+print("\nevery failure path is classified (forced through the mock)")
+# Nothing here can be reached against a real historian on demand, which is exactly
+# why they are exercised: a client must not first meet these in production.
+for forced_status, expected_kind in (
+    (401, "auth"),
+    (403, "auth"),
+    (404, "not_found"),
+    (500, "upstream"),
+    (502, "upstream"),
+    (503, "upstream"),
+):
+    status, body = series(
+        tags=["REACTOR_TEMP"],
+        **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+        interval_seconds=60,
+        simulate_failure=forced_status,
+    )
+    detail = body.get("detail") or {}
+    check(status == 502, f"HTTP {forced_status} from the historian surfaces as 502 (got {status})")
+    check(
+        detail.get("error_kind") == expected_kind,
+        f"HTTP {forced_status} classifies as {expected_kind!r} (got {detail.get('error_kind')!r})",
+    )
+    check(bool(detail.get("message")), f"HTTP {forced_status} carries a human-readable message")
+
+status, body = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+    simulate_failure=418,
+)
+check(
+    (body.get("detail") or {}).get("error_kind") == "upstream",
+    "an unmapped status still classifies rather than escaping untyped",
+)
+
+print("\nclassification of failures that cannot be forced over HTTP")
+# TLS and connection errors never reach the wire, so they are asserted directly
+# against the classifier rather than through the mock.
+import httpx as _httpx  # noqa: E402
+
+from series import classify  # noqa: E402
+
+cases = [
+    (_httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"), "tls"),
+    (_httpx.ConnectError("All connection attempts failed"), "connection"),
+    (_httpx.ConnectTimeout("timed out"), "connection"),
+    (_httpx.ReadTimeout("timed out"), "timeout"),
+    (_httpx.PoolTimeout("pool timeout"), "timeout"),
+    (ValueError("datasource is required for search()"), "configuration"),
+    (RuntimeError("something nobody predicted"), "unknown"),
+]
+for exc, expected_kind in cases:
+    kind, message = classify(exc)
+    check(kind == expected_kind, f"{type(exc).__name__} -> {expected_kind!r} (got {kind!r})")
+    check(bool(message), f"{expected_kind} carries a message")
+
+# An SSLError nested as the cause is the shape httpx actually produces.
+nested = _httpx.ConnectError("connection failed")
+nested.__cause__ = ssl.SSLCertVerificationError("certificate verify failed")
+check(classify(nested)[0] == "tls", "a nested SSLError is found through the cause chain")
+
+# tenacity wraps the real failure; the reported kind must be the real one.
+try:
+    for attempt in tenacity.Retrying(stop=tenacity.stop_after_attempt(1), reraise=False):
+        with attempt:
+            raise _httpx.HTTPStatusError(
+                "401",
+                request=_httpx.Request("GET", "http://x"),
+                response=_httpx.Response(401, request=_httpx.Request("GET", "http://x")),
+            )
+except tenacity.RetryError as retry_error:
+    check(classify(retry_error)[0] == "auth", "tenacity.RetryError is unwrapped to the real cause")
 
 print("\n" + "=" * 60)
 if failures:

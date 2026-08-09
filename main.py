@@ -46,6 +46,7 @@ from operations import (
     MOCK_ONLY_OPERATIONS,
     build_catalog,
 )
+from series import router as series_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aspy21-demo")
@@ -64,6 +65,10 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# The machine-facing ingest contract. Separate from the dashboard's own API on
+# purpose: /api/execute answers a person, /api/v1/series answers a poller.
+app.include_router(series_router)
 
 
 class ExecuteRequest(BaseModel):
@@ -89,6 +94,7 @@ class Environment(BaseModel):
     base_url: str
     datasource: str
     auth_configured: bool
+    auth_scheme: str = Field("basic", description="basic | ntlm | negotiate | none.")
     username: str
     password_source: str = Field(
         "none", description="Where the password came from: environment, credential store, or none."
@@ -96,6 +102,9 @@ class Environment(BaseModel):
     config_file: str = Field("", description="Settings file in use, if any.")
     verify_ssl: bool
     timeout: float
+    timezone: str = Field(
+        "UTC", description="Zone IP.21's naive timestamps are read in (see /api/v1/series)."
+    )
     reader_types: list[str]
     include_fields: list[str]
     output_formats: list[str]
@@ -129,11 +138,13 @@ def environment() -> Environment:
         base_url=settings["base_url"],
         datasource=settings["datasource"],
         auth_configured=settings["auth_configured"],
+        auth_scheme=settings["auth_scheme"],
         username=settings["username"],
         password_source=settings["password_source"],
         config_file=settings["config_file"],
         verify_ssl=settings["verify_ssl"],
         timeout=settings["timeout"],
+        timezone=settings["timezone"],
         reader_types=AVAILABLE_READER_TYPES,
         include_fields=AVAILABLE_INCLUDE_FIELDS,
         output_formats=AVAILABLE_OUTPUT_FORMATS,
@@ -307,7 +318,7 @@ def api_tags(
                 hint = (
                     f" Live mode is pointed at {SETTINGS.base_url}"
                     f" (datasource={SETTINGS.datasource or '<unset>'},"
-                    f" auth={'basic' if SETTINGS.auth_configured else 'none'})."
+                    f" auth={SETTINGS.auth_scheme if SETTINGS.auth_configured else 'anonymous'})."
                     " Check the base URL, the datasource name and your credentials."
                 )
             raise HTTPException(
@@ -374,6 +385,7 @@ def api_health() -> dict[str, Any]:
         "base_url": SETTINGS.base_url,
         "datasource": SETTINGS.datasource,
         "auth_configured": SETTINGS.auth_configured,
+        "auth_scheme": SETTINGS.auth_scheme,
     }
 
     if not SETTINGS.live:

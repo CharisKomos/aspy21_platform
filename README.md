@@ -2,20 +2,29 @@
 
 [![CI](https://github.com/CharisKomos/aspy21_platform/actions/workflows/ci.yml/badge.svg)](https://github.com/CharisKomos/aspy21_platform/actions/workflows/ci.yml)
 
-An interactive dashboard for [`aspy21`](https://github.com/bazdalaz/aspy21), the
-Python client for AspenTech InfoPlus.21's ProcessData REST API. Every operation
-the library offers is a card you can fill in and run, and every run shows you
-the data, the HTTP the library generated, and the Python you would write to do
-the same thing yourself.
+A dashboard **and a gateway** for [`aspy21`](https://github.com/bazdalaz/aspy21),
+the Python client for AspenTech InfoPlus.21's ProcessData REST API.
+
+It does two jobs from the same code:
+
+- **For a person** — every operation the library offers is a card you can fill in
+  and run, and every run shows you the data, the HTTP the library generated, and
+  the Python you would write to do the same thing yourself.
+- **For a program** — [`POST /api/v1/series`](#the-ingest-api) is a narrow ingest
+  contract: tags in, a time window, rows out. It is what lets a service in another
+  language read IP.21 through a library that only exists in Python.
 
 > **Out of the box, nothing here touches a real historian.** `respx` intercepts
 > every outbound HTTP call inside the process. `http://mock.ip21.local/ProcessData`
-> does not resolve to anything, and no credentials are needed or accepted.
+> does not resolve to anything, and no credentials are needed or accepted. That
+> makes it useful as a test double: a client can be built and tested end to end
+> with no server, no credentials and no network.
 
 Use it to learn the library, to see exactly what it puts on the wire before you
-point it at a production server, or as a reference implementation to copy from.
-When you are ready, [live mode](#live-mode-connecting-to-a-real-historian) points
-the same dashboard at your own IP.21 server.
+point it at a production server, as a reference implementation to copy from, or as
+the historian gateway for your own application. When you are ready,
+[live mode](#live-mode-connecting-to-a-real-historian) points all of it at your own
+IP.21 server.
 
 **See also:** [ENDPOINTS.md](ENDPOINTS.md) — a full reference for both this
 platform's REST API and the IP.21 endpoints `aspy21` calls underneath.
@@ -26,17 +35,20 @@ platform's REST API and the IP.21 endpoints `aspy21` calls underneath.
 
 1. [Install and run](#install-and-run)
 2. [Your first minute](#your-first-minute)
-3. [Live mode: connecting to a real historian](#live-mode-connecting-to-a-real-historian)
-4. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
-5. [Choosing tags](#choosing-tags)
-6. [What each card does](#what-each-card-does)
-7. [Reading the results](#reading-the-results)
-8. [Using the API directly](#using-the-api-directly)
-9. [Troubleshooting](#troubleshooting)
-10. [Testing and development](#testing-and-development)
-11. [How the mocking works](#how-the-mocking-works)
-12. [Version caveats](#version-caveats)
-13. [Reference](#reference)
+3. [The ingest API](#the-ingest-api)
+4. [Live mode: connecting to a real historian](#live-mode-connecting-to-a-real-historian)
+5. [Authentication](#authentication)
+6. [Time zones](#time-zones)
+7. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
+8. [Choosing tags](#choosing-tags)
+9. [What each card does](#what-each-card-does)
+10. [Reading the results](#reading-the-results)
+11. [Using the API directly](#using-the-api-directly)
+12. [Troubleshooting](#troubleshooting)
+13. [Testing and development](#testing-and-development)
+14. [How the mocking works](#how-the-mocking-works)
+15. [Version caveats](#version-caveats)
+16. [Reference](#reference)
 
 ---
 
@@ -82,6 +94,31 @@ point it at your own historian instead, run the setup wizard once:
 See [live mode](#live-mode-connecting-to-a-real-historian) for what it asks and
 where to run it.
 
+### Or run it as a container
+
+There is a `Dockerfile`, so the gateway can run as a service alongside whatever
+consumes it. The image ships in mock mode, so this works with no historian:
+
+```bash
+docker build -t aspy21-gateway .
+```
+
+```bash
+docker run --rm -p 8000:8000 aspy21-gateway
+```
+
+Point it at a real plant with environment variables rather than the wizard — a
+container has no credential store to save into:
+
+```bash
+docker run --rm -p 8000:8000 -e ASPY21_MODE=live -e ASPY21_BASE_URL=https://aspen-hist01/ProcessData -e ASPY21_DATASOURCE=IP21 -e ASPY21_USERNAME=DOMAIN\\svc-user -e ASPY21_PASSWORD="$ASPY21_PASSWORD" -e ASPY21_TIMEZONE=Europe/Athens aspy21-gateway
+```
+
+The image runs unprivileged and carries a `HEALTHCHECK` that calls `/api/health`,
+so it reports healthy only once the whole chain answers — not merely once the
+process is up. Pass the password from your shell or a secret; never bake it into
+an image.
+
 ### Installing aspy21 from piwheels
 
 The wheels are pure Python (`py3-none-any`), so the
@@ -120,6 +157,55 @@ Now try the three things that show it is genuinely running the library:
   `httpx.HTTPStatusError`. That difference is real library behaviour.
 - **Card 3**, press Execute twice. The values move, because the mock adds
   jitter.
+
+---
+
+## The ingest API
+
+The cards answer a person. `POST /api/v1/series` answers a program, several times
+an hour, and returns rows and nothing else — no notes, no generated snippet, no
+request bodies.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/series -H "Content-Type: application/json" -d "{\"tags\":[\"FLOW_101\"],\"from\":\"2026-08-08T00:00:00Z\",\"to\":\"2026-08-08T06:00:00Z\",\"interval_seconds\":60}"
+```
+
+Four things about it are worth knowing before you build against it:
+
+**The window is half-open, `(from, to]`.** Pass the newest timestamp you already
+hold as `from`. A reading exactly on that bound is one you have, so excluding it
+makes a poll idempotent — a failed pull can be retried with the same cursor and no
+row arrives twice.
+
+**Timestamps always carry an explicit offset**, and rows are sorted by
+`(tag, timestamp)` and de-duplicated on that pair. Readings that are missing, `NaN`
+or unparseable are dropped and counted rather than passed on as nulls.
+
+**Failures carry a machine-readable `error_kind`** — `connection`, `timeout`,
+`auth`, `tls`, `not_found`, `upstream`, `configuration`, `too_many_rows` — so a
+caller can tell a dropped connection from a wrong password without parsing prose.
+`tenacity.RetryError` is unwrapped first, so a retried failure reports the reason it
+actually failed rather than the retry wrapper.
+
+**Oversized results are refused, not truncated.** A silently short answer would
+advance the caller's cursor past real data. Ask for a shorter window instead.
+
+Full request/response reference, including the error table:
+[ENDPOINTS.md](ENDPOINTS.md#post-apiv1series).
+
+### Testing a client against it
+
+Every failure path can be forced, so a client never meets one for the first time in
+production. In **mock mode only**, add `simulate_failure` with the status you want
+the historian to return:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/series -H "Content-Type: application/json" -d "{\"tags\":[\"FLOW_101\"],\"from\":\"2026-08-08T00:00:00Z\",\"to\":\"2026-08-08T01:00:00Z\",\"simulate_failure\":401}"
+```
+
+That returns `502` with `error_kind: "auth"`. It is refused with `409` in live mode,
+for the same reason the error-handling card is: asking a production historian to
+fail is not a thing to do, and faking it would prove nothing.
 
 ---
 
@@ -283,12 +369,17 @@ changing anything:
 | `ASPY21_MODE` | `mock` or `live` |
 | `ASPY21_BASE_URL` | ProcessData REST root, e.g. `https://aspen.yourplant.local/ProcessData` |
 | `ASPY21_DATASOURCE` | IP.21 datasource name. Reads fall back to the server default; `search()` usually needs it |
-| `ASPY21_USERNAME` | HTTP Basic username |
-| `ASPY21_PASSWORD` | HTTP Basic password. Overrides the credential store |
+| `ASPY21_AUTH_SCHEME` | `basic` (default), `ntlm`, `negotiate` or `none` — see [Authentication](#authentication) |
+| `ASPY21_USERNAME` | Username. NTLM wants it domain-qualified: `DOMAIN\user` |
+| `ASPY21_PASSWORD` | Password. Overrides the credential store |
+| `ASPY21_TIMEZONE` | The zone IP.21 reports in: `UTC` (default), `local`, or an IANA name — see [Time zones](#time-zones) |
 | `ASPY21_TIMEOUT` | Request timeout in seconds (default `30`) |
 | `ASPY21_VERIFY_SSL` | `false` disables certificate checks. Prefer `ASPY21_CA_BUNDLE` |
 | `ASPY21_CA_BUNDLE` | Path to a CA bundle, for internal certificate authorities |
 | `ASPY21_CONFIG` | Path to the settings file (default `aspy21.local.json`) |
+
+Environment variables are how you configure a **container**, which has no credential
+store to read from.
 
 `aspy21` appends `/SQL` and `/Browse` to the base URL itself, so give it the
 root — not a full endpoint path.
@@ -327,17 +418,82 @@ reports the exception type. Common causes:
 - **Cannot open a socket** — network access, not settings. See
   [above](#if-it-cannot-reach-the-server); with Remote Desktop this is the
   likeliest cause by far.
-- **401** — wrong credentials, or the server wants Windows Integrated auth
-  rather than Basic. See the note on `httpx.Auth` below.
+- **401** — wrong credentials, or the server wants Windows Integrated auth rather
+  than Basic. Set `ASPY21_AUTH_SCHEME=ntlm` (see [Authentication](#authentication)),
+  and check the username is domain-qualified.
 - **404** — the base URL is wrong. Re-run the wizard and let it probe.
-- **SSL errors** — an internal CA; give the wizard your CA bundle path.
+- **SSL errors** — an internal CA; give the wizard your CA bundle path. Through
+  `/api/v1/series` these report as `error_kind: "tls"` rather than `connection`,
+  because the host is answering fine and only the certificate is being rejected.
 - **Empty tag browse** — the datasource is unset or wrong.
+- **Timestamps off by a constant** — `ASPY21_TIMEZONE`. See
+  [Time zones](#time-zones).
 
-`aspy21 0.2.0b15` documents HTTP Basic only. If your site fronts IP.21 with
-Windows Integrated authentication, Basic will not work: `AspenClient` also
-accepts any `httpx.Auth` object, so an NTLM or Kerberos auth class plugs in
-there. That path needs a small change in `live_backend.py`, where the
-`httpx.Client` is built.
+A 401 does not always mean the credentials are wrong — it often means the server
+wanted a different **scheme**. See [Authentication](#authentication).
+
+---
+
+## Authentication
+
+`aspy21 0.2.0b15` documents HTTP Basic only, but plenty of sites front IP.21 with
+IIS Windows Integrated authentication, where Basic simply returns 401 no matter how
+correct the password is. Set `ASPY21_AUTH_SCHEME`:
+
+| Scheme | When to use it | Needs |
+|---|---|---|
+| `basic` *(default)* | The server accepts HTTP Basic | nothing |
+| `ntlm` | IIS Windows Integrated (NTLM) | `httpx-ntlm` — installed by default |
+| `negotiate` | Kerberos / SPNEGO | `httpx-gssapi` — **install it yourself** |
+| `none` | Anonymous access | nothing |
+
+Neither Windows scheme is a header you can just set: both are multi-leg
+challenge/response handshakes, so they need an `httpx.Auth` that can drive the
+exchange. `AspenClient` accepts one, which is how they plug in.
+
+`negotiate` is deliberately not installed by default — `httpx-gssapi` needs system
+Kerberos libraries (`libkrb5`), which is a lot to impose for a scheme most sites do
+not use:
+
+```bash
+pip install httpx-gssapi
+```
+
+Selecting a scheme whose library is missing makes the app **refuse to start, naming
+the package**, rather than failing later as an unexplained 401.
+
+Two things that cause a 401 that looks like a wrong password:
+
+- **NTLM usually wants a domain-qualified user** — `DOMAIN\user`, not `user`. Live
+  mode logs a warning at startup if yours is bare.
+- **Kerberos authenticates against a ticket**, not a password, so `negotiate` is the
+  one scheme where a username with no password is a valid configuration.
+
+---
+
+## Time zones
+
+**This is the setting most likely to be wrong without anyone noticing.**
+
+IP.21 answers in the historian machine's *local wall time*, with no zone attached.
+A consumer that stores UTC and takes those values verbatim is wrong by a fixed
+offset — forever, silently, on every reading. No chart reveals it; the data just
+sits at the wrong time of day.
+
+So `/api/v1/series` makes the boundary explicit in both directions: request bounds
+are read as aware instants (a token with no zone is taken as UTC), converted into
+the historian's zone to build the query, and every returned timestamp is converted
+back and rendered with an offset. `ASPY21_TIMEZONE` names that zone:
+
+| Value | Meaning |
+|---|---|
+| `UTC` *(default)* | The historian machine runs on UTC |
+| `local` | Whatever zone this machine is in — what mock mode uses, so it round-trips anywhere |
+| an IANA name | e.g. `Europe/Athens`. On Windows this also needs `tzdata`, which is in `requirements.txt` |
+
+Live mode logs a warning at startup while it is still `UTC`, because that is rarely
+right for a real plant. **Verify it on the first connection**: read a tag you can
+also see in Aspen's own client and compare a few timestamps.
 
 ---
 
@@ -345,7 +501,7 @@ there. That path needs a small change in `live_backend.py`, where the
 
 | Section | What it is |
 | --- | --- |
-| **Header** | Installed `aspy21`, `pandas` and `httpx` versions, plus a link to the generated Swagger docs |
+| **Header** | Installed `aspy21`, `pandas` and `httpx` versions, plus a link to the generated Swagger docs. `/api/environment` additionally reports the active mode, auth scheme and time zone |
 | **Simulated-data banner** | The mock's base URL and datasource |
 | **Tag browser** | Discover tags from IP.21 and choose which ones the cards use |
 | **Cards 1–9** | One per operation. Click a title to expand or collapse |
@@ -548,6 +704,11 @@ curl "http://127.0.0.1:8000/api/tags?pattern=FLOW_*"
 curl -X POST http://127.0.0.1:8000/api/execute -H "Content-Type: application/json" -d "{\"operation\":\"read_snapshot\",\"params\":{\"tags\":[\"REACTOR_TEMP\"],\"include\":\"ALL\"}}"
 ```
 
+`/api/execute` mirrors the cards, so its responses carry the notes, the generated
+snippet and every request body — useful to read, wasteful to poll. If you are
+writing a client rather than exploring, use [`/api/v1/series`](#the-ingest-api)
+instead.
+
 Full parameter and response documentation: **[ENDPOINTS.md](ENDPOINTS.md)**.
 
 ---
@@ -615,6 +776,12 @@ asserts behaviour rather than status codes: endpoint selection, wildcard
 semantics, the interval-to-period conversion, tag batching, retry counts,
 per-variant field sets, value jitter, and the empty-selection guard. Exits
 non-zero on failure.
+
+It also covers the ingest contract: the half-open window, sorting and
+de-duplication, offset-bearing timestamps, and **every failure path** — each
+`error_kind` forced through the mock, plus the ones that never reach the wire (TLS,
+connection, timeouts, `tenacity.RetryError` unwrapping) asserted directly against
+the classifier.
 
 ```bash
 .venv\Scripts\python.exe selftest_live.py
@@ -722,6 +889,7 @@ wheel. If you move to a version that has them, cards 4 and 8 are where to look.
 ```
 main.py               FastAPI app and routes
 operations.py         the 9 card definitions and their executors
+series.py             POST /api/v1/series — the machine-facing ingest contract
 config.py             settings: environment > aspy21.local.json > defaults
 setup_live.py         interactive setup for a real historian
 mock_backend.py       the ONLY module that fakes anything
@@ -730,6 +898,7 @@ selftest.py           end-to-end self-test (mock mode)
 selftest_live.py      end-to-end self-test (live mode, against localhost)
 templates/index.html  server-rendered dashboard
 static/               style.css, app.js
+Dockerfile            runs the gateway as a service
 ENDPOINTS.md          endpoint reference
 
 aspy21.local.json     your saved connection (git-ignored, never has a password)

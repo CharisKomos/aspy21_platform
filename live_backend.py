@@ -27,7 +27,7 @@ from typing import Any, Protocol
 import httpx
 from aspy21 import AspenClient
 
-from config import SETTINGS, Settings
+from config import AUTH_NEGOTIATE, AUTH_NTLM, SETTINGS, Settings
 from mock_backend import HttpCall, MockBackend, _extract_g
 
 logger = logging.getLogger("aspy21-demo.live")
@@ -52,6 +52,37 @@ class Backend(Protocol):
 
     @property
     def http_calls(self) -> list[dict[str, Any]]: ...
+
+
+def build_auth(settings: Settings) -> Any:
+    """The ``auth=`` httpx needs for the configured scheme, or None for anonymous.
+
+    Basic is a plain tuple, which httpx understands natively. Windows Integrated
+    auth is not a header you can just set: both NTLM and Negotiate are multi-leg
+    challenge/response handshakes, so they need an ``httpx.Auth`` that can drive
+    the exchange. Those live in optional packages, and ``config.load_settings``
+    has already refused to start if the one you asked for is missing -- so an
+    ImportError here would be a bug, not a misconfiguration.
+    """
+    credentials = settings.credentials
+    if credentials is None:
+        return None
+
+    username, password = credentials
+
+    if settings.auth_scheme == AUTH_NTLM:
+        from httpx_ntlm import HttpNtlmAuth
+
+        return HttpNtlmAuth(username, password)
+
+    if settings.auth_scheme == AUTH_NEGOTIATE:
+        from httpx_gssapi import HTTPSPNEGOAuth
+
+        # Kerberos authenticates against the service principal of the host, not a
+        # password, so an existing ticket is used when one is present.
+        return HTTPSPNEGOAuth()
+
+    return credentials  # basic
 
 
 def _describe(request: httpx.Request, base_url: str) -> str:
@@ -103,7 +134,7 @@ class LiveBackend:
         http_client = httpx.Client(
             timeout=self.settings.timeout,
             verify=self.settings.verify,
-            auth=self.settings.auth,
+            auth=build_auth(self.settings),
             event_hooks={"response": [self._log_response]},
         )
         kwargs: dict[str, Any] = {

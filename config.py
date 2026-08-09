@@ -29,10 +29,21 @@ Environment variables
 ``ASPY21_BASE_URL``         ProcessData REST root, e.g.
                             ``https://aspen.plant.local/ProcessData``
 ``ASPY21_DATASOURCE``       IP.21 datasource name. Required for search().
-``ASPY21_USERNAME``         HTTP Basic username. Omit for anonymous access.
-``ASPY21_PASSWORD``         HTTP Basic password. Overrides the credential
-                            store when set.
+``ASPY21_AUTH_SCHEME``      ``basic`` (default), ``ntlm``, ``negotiate`` or
+                            ``none``. Sites that front IP.21 with IIS Windows
+                            Integrated authentication need ``ntlm`` (or
+                            ``negotiate`` for Kerberos); Basic simply fails
+                            there with 401.
+``ASPY21_USERNAME``         Username. Omit for anonymous access. NTLM wants it
+                            domain-qualified: ``DOMAIN\\user``.
+``ASPY21_PASSWORD``         Password. Overrides the credential store when set.
 ``ASPY21_TIMEOUT``          Request timeout in seconds (default 30).
+``ASPY21_TIMEZONE``         The zone IP.21 reports timestamps in: ``UTC``
+                            (default), ``local``, or an IANA name such as
+                            ``Europe/Athens``. IP.21 answers in the historian
+                            machine's local wall time with no zone attached, so
+                            getting this wrong shifts every reading by a fixed
+                            offset -- silently. Only ``/api/v1/series`` uses it.
 ``ASPY21_VERIFY_SSL``       ``false`` disables certificate verification.
 ``ASPY21_CA_BUNDLE``        Path to a CA bundle, for internal CAs. Preferred
                             over disabling verification.
@@ -70,8 +81,48 @@ DEFAULT_CONFIG_PATH = Path(__file__).with_name("aspy21.local.json")
 # Keys setup_live.py is allowed to write. Anything else in the file is ignored
 # rather than silently trusted.
 _FILE_KEYS = frozenset(
-    {"mode", "base_url", "datasource", "username", "timeout", "verify_ssl", "ca_bundle"}
+    {
+        "mode",
+        "base_url",
+        "datasource",
+        "username",
+        "timeout",
+        "verify_ssl",
+        "ca_bundle",
+        "timezone",
+        "auth_scheme",
+    }
 )
+
+# How to authenticate. IP.21 is usually fronted by IIS, and which of these a site
+# accepts is a deployment decision made long before this code runs.
+AUTH_BASIC = "basic"
+AUTH_NTLM = "ntlm"
+AUTH_NEGOTIATE = "negotiate"
+AUTH_NONE = "none"
+AUTH_SCHEMES = (AUTH_BASIC, AUTH_NTLM, AUTH_NEGOTIATE, AUTH_NONE)
+
+# Windows Integrated auth needs a library httpx does not bundle, and each brings
+# its own baggage: httpx-ntlm is pure Python, httpx-gssapi needs system Kerberos
+# libraries. Both are optional, so a Basic-only install stays small -- but asking
+# for a scheme whose library is absent must fail loudly at startup rather than as
+# a puzzling 401 on the first read.
+_AUTH_PACKAGES = {
+    AUTH_NTLM: ("httpx_ntlm", "httpx-ntlm"),
+    AUTH_NEGOTIATE: ("httpx_gssapi", "httpx-gssapi"),
+}
+
+
+def auth_backend_available(scheme: str) -> bool:
+    """Whether the library a scheme needs is importable."""
+    module = _AUTH_PACKAGES.get(scheme)
+    if module is None:
+        return True
+    try:
+        __import__(module[0])
+    except Exception:
+        return False
+    return True
 
 
 class ConfigError(RuntimeError):
@@ -136,6 +187,12 @@ class Settings:
     timeout: float
     verify_ssl: bool
     ca_bundle: str
+    # The zone IP.21's naive timestamps are in. Only /api/v1/series needs it:
+    # the dashboard displays whatever the historian said, but an ingest client
+    # stores UTC and cannot guess the offset.
+    timezone: str = "UTC"
+    # How to authenticate: basic | ntlm | negotiate | none. See AUTH_SCHEMES.
+    auth_scheme: str = AUTH_BASIC
     # Where the password came from, for display and troubleshooting. Never the
     # value itself.
     password_source: str = "none"
@@ -146,16 +203,16 @@ class Settings:
         return self.mode == "live"
 
     @property
-    def auth(self) -> tuple[str, str] | None:
-        """Credentials for httpx, or None for anonymous access."""
-        if self.live and self.username:
+    def credentials(self) -> tuple[str, str] | None:
+        """Username and password, or None when going out anonymous."""
+        if self.live and self.auth_scheme != AUTH_NONE and self.username:
             return (self.username, self.password)
         return None
 
     @property
     def auth_configured(self) -> bool:
         """Whether credentials are set, without exposing them."""
-        return self.auth is not None
+        return self.credentials is not None
 
     @property
     def verify(self) -> str | bool:
@@ -172,11 +229,13 @@ class Settings:
             "base_url": self.base_url,
             "datasource": self.datasource,
             "auth_configured": self.auth_configured,
+            "auth_scheme": self.auth_scheme,
             "username": self.username if self.live else "",
             "password_source": self.password_source,
             "timeout": self.timeout,
             "verify_ssl": self.verify_ssl,
             "ca_bundle": self.ca_bundle,
+            "timezone": self.timezone,
             "config_file": self.config_file,
         }
 
@@ -218,6 +277,9 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
             timeout=10.0,
             verify_ssl=True,
             ca_bundle="",
+            # The mock generates naive timestamps in the host's own zone, so
+            # 'local' is what makes a mock read round-trip on any machine.
+            timezone=_env("ASPY21_TIMEZONE") or "local",
             config_file=path if saved else "",
         )
 
@@ -230,6 +292,23 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
     if not base_url.startswith(("http://", "https://")):
         raise ConfigError(f"base_url={base_url!r} must start with http:// or https://")
 
+    auth_scheme = setting("ASPY21_AUTH_SCHEME", "auth_scheme", AUTH_BASIC).lower()
+    if auth_scheme not in AUTH_SCHEMES:
+        raise ConfigError(
+            f"auth_scheme={auth_scheme!r} is not valid. Use one of: {', '.join(AUTH_SCHEMES)}."
+        )
+    if not auth_backend_available(auth_scheme):
+        _, package = _AUTH_PACKAGES[auth_scheme]
+        raise ConfigError(
+            f"auth_scheme={auth_scheme!r} needs the optional {package} package, which is not "
+            f"installed here. Run 'pip install {package}'"
+            + (
+                " (it also needs system Kerberos libraries: libkrb5 on Debian/Ubuntu)."
+                if auth_scheme == AUTH_NEGOTIATE
+                else "."
+            )
+        )
+
     username = setting("ASPY21_USERNAME", "username")
 
     # The password is the one setting that never comes from the file.
@@ -239,13 +318,20 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         password = get_stored_password(username)
         password_source = "credential store" if password else "none"
 
-    if username and not password:
+    # Negotiate can use an existing Kerberos ticket, so it is the one scheme where
+    # a username without a password is a legitimate configuration.
+    if username and not password and auth_scheme != AUTH_NEGOTIATE:
         raise ConfigError(
             f"No password found for user {username!r}. Run 'python setup_live.py' to save "
             "one to the credential store, or set ASPY21_PASSWORD for this shell."
         )
     if password and not username:
         raise ConfigError("ASPY21_PASSWORD is set but no username is configured.")
+    if auth_scheme == AUTH_NONE and username:
+        raise ConfigError(
+            "auth_scheme='none' sends requests anonymously, but a username is configured. "
+            "Remove the username, or pick basic/ntlm/negotiate."
+        )
 
     ca_bundle = setting("ASPY21_CA_BUNDLE", "ca_bundle")
     if ca_bundle and not os.path.exists(ca_bundle):
@@ -276,6 +362,8 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         timeout=timeout,
         verify_ssl=verify_ssl,
         ca_bundle=ca_bundle,
+        timezone=setting("ASPY21_TIMEZONE", "timezone", "UTC"),
+        auth_scheme=auth_scheme,
         password_source=password_source,
         config_file=path if saved else "",
     )
@@ -284,9 +372,15 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         "LIVE MODE: talking to %s (datasource=%r, auth=%s, verify=%s). Reads hit a real historian.",
         settings.base_url,
         settings.datasource or "<server default>",
-        "basic" if settings.auth else "none",
+        settings.auth_scheme if settings.auth_configured else "anonymous",
         settings.verify,
     )
+    if settings.auth_scheme == AUTH_NTLM and "\\" not in settings.username:
+        logger.warning(
+            "NTLM usually wants a domain-qualified user, e.g. DOMAIN\\%s. A bare username "
+            "is a common cause of a 401 that looks like a wrong password.",
+            settings.username or "user",
+        )
     if base_url.startswith("http://"):
         logger.warning(
             "The base URL is plain http:// -- credentials would cross the network "
@@ -301,6 +395,12 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         logger.warning(
             "No datasource configured. Reads use the server default, but "
             "client.search() (the tag browser) usually requires a datasource."
+        )
+    if settings.timezone.upper() == "UTC":
+        logger.warning(
+            "ASPY21_TIMEZONE is UTC. IP.21 answers in the historian machine's local wall "
+            "time, so if that machine is not on UTC every reading /api/v1/series returns "
+            "is shifted by a fixed offset. Set it to the plant's zone, e.g. Europe/Athens."
         )
 
     return settings

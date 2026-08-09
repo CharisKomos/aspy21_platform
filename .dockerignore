@@ -1,0 +1,14 @@
+.git
+.github
+.vs
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.ruff_cache
+.pytest_cache
+
+# Local connection settings — the container is configured through ASPY21_* env
+# vars, and baking someone's saved server into an image would be a surprise.
+aspy21.local.json
+connection.json
