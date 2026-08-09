@@ -14,7 +14,10 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import ssl
 import sys
+
+import tenacity
 
 # Force the mocked backend before main is imported. Without this, a saved live
 # connection (aspy21.local.json) would send this test's reads to a real
@@ -379,6 +382,79 @@ check(
     (body.get("detail") or {}).get("error_kind") == "too_many_rows",
     "the refusal names the reason",
 )
+
+print("\nevery failure path is classified (forced through the mock)")
+# Nothing here can be reached against a real historian on demand, which is exactly
+# why they are exercised: a client must not first meet these in production.
+for forced_status, expected_kind in (
+    (401, "auth"),
+    (403, "auth"),
+    (404, "not_found"),
+    (500, "upstream"),
+    (502, "upstream"),
+    (503, "upstream"),
+):
+    status, body = series(
+        tags=["REACTOR_TEMP"],
+        **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+        interval_seconds=60,
+        simulate_failure=forced_status,
+    )
+    detail = body.get("detail") or {}
+    check(status == 502, f"HTTP {forced_status} from the historian surfaces as 502 (got {status})")
+    check(
+        detail.get("error_kind") == expected_kind,
+        f"HTTP {forced_status} classifies as {expected_kind!r} (got {detail.get('error_kind')!r})",
+    )
+    check(bool(detail.get("message")), f"HTTP {forced_status} carries a human-readable message")
+
+status, body = series(
+    tags=["REACTOR_TEMP"],
+    **{"from": WINDOW_START.isoformat(), "to": WINDOW_END.isoformat()},
+    simulate_failure=418,
+)
+check(
+    (body.get("detail") or {}).get("error_kind") == "upstream",
+    "an unmapped status still classifies rather than escaping untyped",
+)
+
+print("\nclassification of failures that cannot be forced over HTTP")
+# TLS and connection errors never reach the wire, so they are asserted directly
+# against the classifier rather than through the mock.
+import httpx as _httpx  # noqa: E402
+
+from series import classify  # noqa: E402
+
+cases = [
+    (_httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"), "tls"),
+    (_httpx.ConnectError("All connection attempts failed"), "connection"),
+    (_httpx.ConnectTimeout("timed out"), "connection"),
+    (_httpx.ReadTimeout("timed out"), "timeout"),
+    (_httpx.PoolTimeout("pool timeout"), "timeout"),
+    (ValueError("datasource is required for search()"), "configuration"),
+    (RuntimeError("something nobody predicted"), "unknown"),
+]
+for exc, expected_kind in cases:
+    kind, message = classify(exc)
+    check(kind == expected_kind, f"{type(exc).__name__} -> {expected_kind!r} (got {kind!r})")
+    check(bool(message), f"{expected_kind} carries a message")
+
+# An SSLError nested as the cause is the shape httpx actually produces.
+nested = _httpx.ConnectError("connection failed")
+nested.__cause__ = ssl.SSLCertVerificationError("certificate verify failed")
+check(classify(nested)[0] == "tls", "a nested SSLError is found through the cause chain")
+
+# tenacity wraps the real failure; the reported kind must be the real one.
+try:
+    for attempt in tenacity.Retrying(stop=tenacity.stop_after_attempt(1), reraise=False):
+        with attempt:
+            raise _httpx.HTTPStatusError(
+                "401",
+                request=_httpx.Request("GET", "http://x"),
+                response=_httpx.Response(401, request=_httpx.Request("GET", "http://x")),
+            )
+except tenacity.RetryError as retry_error:
+    check(classify(retry_error)[0] == "auth", "tenacity.RetryError is unwrapped to the real cause")
 
 print("\n" + "=" * 60)
 if failures:

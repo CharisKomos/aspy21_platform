@@ -25,3 +25,16 @@ keyring>=25.0
 # needed if ASPY21_TIMEZONE names a zone (Europe/Athens); 'UTC' and 'local' work
 # without it. Harmless elsewhere, so it is not conditional.
 tzdata>=2024.1
+
+# Windows Integrated authentication, for sites where IIS fronts IP.21 with it and
+# Basic just returns 401. Pure Python, so it installs anywhere; only used when
+# ASPY21_AUTH_SCHEME=ntlm.
+httpx-ntlm>=1.4
+
+# Kerberos/SPNEGO (ASPY21_AUTH_SCHEME=negotiate) is deliberately NOT installed by
+# default: httpx-gssapi needs system Kerberos libraries (libkrb5-dev to build,
+# libkrb5-3 to run), which is a lot to impose on everyone for a scheme most sites
+# do not use. Install it yourself where you need it:
+#     pip install httpx-gssapi
+# The app refuses to start with a clear message if you select the scheme without
+# it, rather than failing later as an unexplained 401.

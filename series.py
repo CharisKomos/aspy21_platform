@@ -35,6 +35,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+import ssl
 import time
 from typing import Any
 
@@ -83,6 +84,16 @@ class SeriesRequest(BaseModel):
     )
     include_status: bool = Field(True, description="Ask for the per-reading quality code.")
     max_rows: int = Field(DEFAULT_MAX_ROWS, gt=0, description="Refuse rather than return more.")
+    simulate_failure: int | None = Field(
+        None,
+        ge=400,
+        le=599,
+        description=(
+            "Mock mode only: make the historian return this status, so a client can be "
+            "tested against every failure path without breaking a real server. Refused "
+            "with 409 in live mode."
+        ),
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -230,6 +241,24 @@ def unwrap(exc: BaseException) -> BaseException:
     return exc
 
 
+def _is_tls_failure(exc: BaseException) -> bool:
+    """Whether a connection failure was really a certificate problem.
+
+    httpx wraps TLS errors in ConnectError, so they arrive looking like "could
+    not reach the server" -- which sends people to check firewalls when the host
+    is answering fine and only the certificate is wrong. Worth separating: an
+    internal CA needs ASPY21_CA_BUNDLE, not a network ticket.
+    """
+    seen: list[BaseException] = []
+    cursor: BaseException | None = exc
+    while cursor is not None and cursor not in seen and len(seen) < 10:
+        if isinstance(cursor, ssl.SSLError):
+            return True
+        seen.append(cursor)
+        cursor = cursor.__cause__ or cursor.__context__
+    return "certificate verify failed" in str(exc).lower() or "ssl" in type(exc).__name__.lower()
+
+
 def classify(exc: BaseException) -> tuple[str, str]:
     """``(error_kind, message)``.
 
@@ -238,6 +267,12 @@ def classify(exc: BaseException) -> tuple[str, str]:
     retry behaviour, and neither is recoverable by trying harder immediately.
     """
     root = unwrap(exc)
+    if isinstance(root, (httpx.ConnectError, httpx.ConnectTimeout)) and _is_tls_failure(root):
+        return "tls", (
+            f"The TLS certificate for {SETTINGS.base_url} was rejected: {root}. If the "
+            "historian uses an internal CA, point ASPY21_CA_BUNDLE at its bundle; a "
+            "certificate is issued to a hostname, so an IP address never validates."
+        )
     if isinstance(root, (httpx.ConnectError, httpx.ConnectTimeout)):
         return "connection", f"Could not reach the historian at {SETTINGS.base_url}: {root}"
     if isinstance(root, httpx.TimeoutException):
@@ -288,13 +323,28 @@ def api_series(payload: SeriesRequest) -> SeriesResponse:
             },
         )
 
+    # Forcing a failure is a testing affordance, not a feature of the data path.
+    # Refused live for the same reason the error-handling card is: asking a real
+    # historian to fail is not a thing to do, and faking it would prove nothing.
+    if payload.simulate_failure is not None and SETTINGS.live:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_kind": "bad_request",
+                "message": (
+                    "simulate_failure only works against the mock backend. Restart with "
+                    "ASPY21_MODE=mock to exercise the failure paths."
+                ),
+            },
+        )
+
     tz = historian_tz()
     interval = payload.interval_seconds or None
     read_type = ReaderType.INT if interval else ReaderType.RAW
     include = IncludeFields.STATUS if payload.include_status else IncludeFields.NONE
 
     started = time.perf_counter()
-    with open_backend() as backend:
+    with open_backend(fail_status=payload.simulate_failure) as backend:
         client = backend.client()
         try:
             result = client.read(

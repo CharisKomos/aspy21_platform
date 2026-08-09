@@ -94,6 +94,7 @@ class Environment(BaseModel):
     base_url: str
     datasource: str
     auth_configured: bool
+    auth_scheme: str = Field("basic", description="basic | ntlm | negotiate | none.")
     username: str
     password_source: str = Field(
         "none", description="Where the password came from: environment, credential store, or none."
@@ -137,6 +138,7 @@ def environment() -> Environment:
         base_url=settings["base_url"],
         datasource=settings["datasource"],
         auth_configured=settings["auth_configured"],
+        auth_scheme=settings["auth_scheme"],
         username=settings["username"],
         password_source=settings["password_source"],
         config_file=settings["config_file"],
@@ -316,7 +318,7 @@ def api_tags(
                 hint = (
                     f" Live mode is pointed at {SETTINGS.base_url}"
                     f" (datasource={SETTINGS.datasource or '<unset>'},"
-                    f" auth={'basic' if SETTINGS.auth_configured else 'none'})."
+                    f" auth={SETTINGS.auth_scheme if SETTINGS.auth_configured else 'anonymous'})."
                     " Check the base URL, the datasource name and your credentials."
                 )
             raise HTTPException(
@@ -383,6 +385,7 @@ def api_health() -> dict[str, Any]:
         "base_url": SETTINGS.base_url,
         "datasource": SETTINGS.datasource,
         "auth_configured": SETTINGS.auth_configured,
+        "auth_scheme": SETTINGS.auth_scheme,
     }
 
     if not SETTINGS.live:
