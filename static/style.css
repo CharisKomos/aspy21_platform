@@ -391,3 +391,19 @@ ul.notes li { margin-bottom: 5px; }
   .op-head { grid-template-columns: 70px 1fr 20px; }
   .op-index, .op-summary { display: none; }
 }
+
+/* SQLplus entry on the SQL card: monospaced, and wide enough to read a query. */
+.code-area {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}

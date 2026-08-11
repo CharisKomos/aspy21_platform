@@ -312,7 +312,7 @@
         params[name] = param.querySelector("input[type=checkbox]").checked;
         return;
       }
-      const input = param.querySelector("input, select");
+      const input = param.querySelector("input, select, textarea");
       if (!input) return;
       const raw = input.value.trim();
       if (type === "tags") {

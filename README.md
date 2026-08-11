@@ -36,19 +36,20 @@ platform's REST API and the IP.21 endpoints `aspy21` calls underneath.
 1. [Install and run](#install-and-run)
 2. [Your first minute](#your-first-minute)
 3. [The ingest API](#the-ingest-api)
-4. [Live mode: connecting to a real historian](#live-mode-connecting-to-a-real-historian)
-5. [Authentication](#authentication)
-6. [Time zones](#time-zones)
-7. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
-8. [Choosing tags](#choosing-tags)
-9. [What each card does](#what-each-card-does)
-10. [Reading the results](#reading-the-results)
-11. [Using the API directly](#using-the-api-directly)
-12. [Troubleshooting](#troubleshooting)
-13. [Testing and development](#testing-and-development)
-14. [How the mocking works](#how-the-mocking-works)
-15. [Version caveats](#version-caveats)
-16. [Reference](#reference)
+4. [Running your own SQLplus](#running-your-own-sqlplus)
+5. [Live mode: connecting to a real historian](#live-mode-connecting-to-a-real-historian)
+6. [Authentication](#authentication)
+7. [Time zones](#time-zones)
+8. [The dashboard, top to bottom](#the-dashboard-top-to-bottom)
+9. [Choosing tags](#choosing-tags)
+10. [What each card does](#what-each-card-does)
+11. [Reading the results](#reading-the-results)
+12. [Using the API directly](#using-the-api-directly)
+13. [Troubleshooting](#troubleshooting)
+14. [Testing and development](#testing-and-development)
+15. [How the mocking works](#how-the-mocking-works)
+16. [Version caveats](#version-caveats)
+17. [Reference](#reference)
 
 ---
 
@@ -249,6 +250,59 @@ curl -X POST http://127.0.0.1:8000/api/v1/series -H "Content-Type: application/j
 That returns `502` with `error_kind: "auth"`. It is refused with `409` in live mode,
 for the same reason the error-handling card is: asking a production historian to
 fail is not a thing to do, and faking it would prove nothing.
+
+---
+
+## Running your own SQLplus
+
+`aspy21` builds SQLplus internally — its tag search emits `<SQL t="SQLplus">` and
+posts it to `{base_url}/SQL` — but exposes no public way to send your own. The
+**SQL scripts** card opens that door, wrapping your query in the same envelope and
+posting it through the same authenticated client, so auth, TLS and the intercepted
+HTTP panel all work exactly as on every other card.
+
+Put `.sql` files in a folder, point `ASPY21_SQL_DIR` at it, and they appear in the
+card's dropdown. With Docker the folder is mounted read-only, so adding a file and
+refreshing the page is enough:
+
+```bash
+ASPY21_SQL_DIR=./sql
+```
+
+Or over HTTP, for a machine caller:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sql -H "Content-Type: application/json" -d "{\"script\":\"daily.sql\",\"datasource\":\"IP21\"}"
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/v1/sql/scripts` | The `.sql` files available, and the folder they came from |
+| `GET /api/v1/sql/scripts/{name}` | One script's contents, and whether it is read-only |
+| `POST /api/v1/sql` | Run a `script`, or inline `sql`. Takes the same `connection` object as the other endpoints |
+
+### Writes are refused unless you ask for them
+
+**`aspy21` being read-only is a guarantee, not a missing feature** — nothing you
+call through it can alter the historian. SQLplus has no such property: with the
+right permissions it will `UPDATE` and `DELETE`, and a mistyped `WHERE` against a
+production historian is not a recoverable situation.
+
+So anything that is not a plain `SELECT` is refused. The check strips comments
+first, and requires *every* statement in the script to be a read — a `delete`
+after a `select` does not slip through. To allow writes:
+
+```bash
+ASPY21_SQL_ALLOW_WRITES=true
+```
+
+> That switch is a convenience, not a control. The durable protection is a
+> **read-only account on the historian**, which nothing in this application can
+> override. Use one.
+
+Scripts are read from the configured folder and nowhere else: a name is resolved
+and its parent re-checked, so `../../etc/passwd` and absolute paths are both
+rejected rather than merely discouraged.
 
 ---
 

@@ -204,6 +204,10 @@
               </div>
             </div>
 
+          {% elif field.type == 'textarea' %}
+            <textarea id="{{ op.id }}__{{ field.name }}" name="{{ field.name }}"
+                      rows="8" spellcheck="false" class="code-area">{{ field.default }}</textarea>
+
           {% else %}
             <input type="text" id="{{ op.id }}__{{ field.name }}" name="{{ field.name }}"
                    value="{{ field.default }}" spellcheck="false">

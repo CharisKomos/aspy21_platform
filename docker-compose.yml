@@ -36,6 +36,15 @@ services:
       - ASPY21_VERIFY_SSL=${ASPY21_VERIFY_SSL:-true}
       - ASPY21_CA_BUNDLE=${ASPY21_CA_BUNDLE:-}
       - ASPY21_TIMEOUT=${ASPY21_TIMEOUT:-30}
+      # SQLplus scripts. The folder is mounted below, so editing a .sql file on the
+      # host changes what the SQL card offers without rebuilding.
+      - ASPY21_SQL_DIR=/app/sql
+      # aspy21 itself cannot alter the historian; SQLplus can. Leave this off unless
+      # you mean it, and prefer a read-only account on the historian besides.
+      - ASPY21_SQL_ALLOW_WRITES=${ASPY21_SQL_ALLOW_WRITES:-false}
+    volumes:
+      # Your .sql scripts, live-mounted: add a file, refresh the page, run it.
+      - ${ASPY21_SQL_DIR:-./sql}:/app/sql:ro
     ports:
       # Override with ASPY21_PORT if something already holds 8000 — the DeMAICo
       # stack publishes its own copy on 8001 for exactly that reason.

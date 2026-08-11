@@ -19,6 +19,10 @@ from aspy21 import AspenClient, IncludeFields, OutputFormat, ReaderType
 from config import SETTINGS
 from live_backend import Backend
 from mock_backend import TAGS
+from sql_scripts import build_envelope, is_read_only, list_scripts, read_script, rows_from_response
+
+# Sentinel in the script dropdown for "use whatever is typed in the box below".
+INLINE_SQL = "— type below —"
 
 # Reader types this installed version actually offers. 0.2.0b15 ships
 # RAW/INT/SNAPSHOT/AVG only -- there is no MIN, MAX or RNG.
@@ -643,7 +647,80 @@ def _version_label() -> str:
 # Cards that need a server which fails on command, so they cannot run live.
 MOCK_ONLY_OPERATIONS = frozenset({"error_handling"})
 
+
+def op_run_sql(p: dict[str, Any], mb: Backend) -> dict[str, Any]:
+    """Run a SQLplus script from the scripts folder, or typed in directly.
+
+    aspy21 builds SQLplus internally but exposes no way to send your own, so this
+    wraps the query in the same ``<SQL t="SQLplus">`` envelope the library uses and
+    posts it through the library's own authenticated client -- which is what keeps
+    auth, TLS and the intercepted-HTTP panel working exactly as on every other card.
+    """
+    script = str(p.get("script") or INLINE_SQL).strip()
+    sql = str(p.get("sql") or "")
+    if script and script != INLINE_SQL:
+        sql = read_script(SETTINGS.sql_dir, script)
+
+    if not sql.strip():
+        return {
+            "result_kind": "records",
+            "records": [],
+            "row_count": 0,
+            "table": None,
+            "code": _code("# Choose a script, or type a query, then Execute."),
+            "notes": ["Nothing to run: pick a script from the folder or enter SQLplus below."],
+        }
+
+    if not is_read_only(sql) and not SETTINGS.sql_allow_writes:
+        raise ValueError(
+            "This script is not a plain SELECT and writes are disabled. Set "
+            "ASPY21_SQL_ALLOW_WRITES=true to permit it — and prefer a read-only account "
+            "on the historian, which no setting here can override."
+        )
+
+    datasource = str(p.get("datasource") or SETTINGS.datasource or "").strip()
+    if not datasource:
+        raise ValueError("SQLplus needs a datasource. Set ASPY21_DATASOURCE, or enter one here.")
+
+    max_rows = _opt_int(p.get("max_rows")) or 1000
+    xml = build_envelope(sql, datasource, max_rows=max_rows)
+
+    client = mb.client()
+    response = client._client.post(  # the library exposes no public SQL path
+        f"{SETTINGS.base_url}/SQL", content=xml, headers={"Content-Type": "text/xml"}
+    )
+    response.raise_for_status()
+    rows = rows_from_response(response.json())
+
+    return {
+        **_shape_result(rows, OutputFormat.JSON),
+        "code": _code(
+            "# aspy21 has no public SQL method, so post the envelope it builds internally.\n"
+            "    xml = (\n"
+            f'        \'<SQL g="aspy21_script" t="SQLplus" ds="{datasource}" \'\n'
+            "        'dso=\"CHARINT=N;CHARFLOAT=N;CHARTIME=N;CONVERTERRORS=N\" '\n"
+            f'        \'m="{max_rows}" to="60" response="Original" s="1">\'\n'
+            "        f'<![CDATA[{sql}]]></SQL>'\n"
+            "    )\n"
+            '    r = client._client.post(f"{client.base_url}/SQL", content=xml,\n'
+            '                            headers={"Content-Type": "text/xml"})'
+        ),
+        "notes": [
+            f"Ran {'script ' + script if script != INLINE_SQL else 'an inline query'} "
+            f"against datasource {datasource}.",
+            "SQLplus goes to the same POST /SQL endpoint the history readers use — the "
+            "difference is that the query is yours rather than one aspy21 built.",
+            (
+                "Read-only (SELECT), so it cannot alter the historian."
+                if is_read_only(sql)
+                else "This query can WRITE. Writes are enabled on this gateway."
+            ),
+        ],
+    }
+
+
 EXECUTORS: dict[str, Callable[[dict[str, Any], Backend], dict[str, Any]]] = {
+    "run_sql": op_run_sql,
     "read_raw": op_read_raw,
     "read_int": op_read_int,
     "read_snapshot": op_read_snapshot,
@@ -700,7 +777,51 @@ def build_catalog() -> list[dict[str, Any]]:
     start, end = default_window(1)
     day_start, day_end = default_window(8)
 
+    scripts = [INLINE_SQL] + [s["name"] for s in list_scripts(SETTINGS.sql_dir)]
+
     return [
+        {
+            "id": "run_sql",
+            "index": 0,
+            "title": "SQL scripts",
+            "verb": "SQL",
+            "summary": "Run a SQLplus script from your scripts folder against the historian.",
+            "detail": (
+                "aspy21 builds SQLplus internally but exposes no way to send your own. "
+                'This posts your query in the same <SQL t="SQLplus"> envelope, through '
+                "the same authenticated client, so the intercepted HTTP below is the real "
+                f"request. Scripts are read from {SETTINGS.sql_dir}. "
+                + (
+                    "Writes are ENABLED on this gateway."
+                    if SETTINGS.sql_allow_writes
+                    else "Anything that is not a SELECT is refused; set "
+                    "ASPY21_SQL_ALLOW_WRITES=true "
+                    "to allow it, and prefer a read-only account on the historian."
+                )
+            ),
+            "fields": [
+                {
+                    "name": "script",
+                    "label": "Script",
+                    "type": "select",
+                    "options": scripts,
+                    "default": scripts[1] if len(scripts) > 1 else INLINE_SQL,
+                },
+                {
+                    "name": "sql",
+                    "label": "SQLplus (used when no script is chosen)",
+                    "type": "textarea",
+                    "default": "select name, name->ip_description\nfrom all_records",
+                },
+                {
+                    "name": "datasource",
+                    "label": "Datasource",
+                    "type": "text",
+                    "default": SETTINGS.datasource,
+                },
+                {"name": "max_rows", "label": "Max rows", "type": "number", "default": 1000},
+            ],
+        },
         {
             "id": "read_raw",
             "index": 1,

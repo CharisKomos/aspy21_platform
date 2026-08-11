@@ -49,6 +49,11 @@ Environment variables
                             over disabling verification.
 ``ASPY21_CONFIG``           Path to the settings file (default
                             ``aspy21.local.json`` beside this module).
+``ASPY21_SQL_DIR``          Folder of ``.sql`` scripts the SQL card can run
+                            (default ``sql`` beside this module).
+``ASPY21_SQL_ALLOW_WRITES`` ``true`` lets non-SELECT scripts run. Off by
+                            default: aspy21 itself cannot alter the historian,
+                            and SQLplus can.
 ==========================  ===============================================
 
 Credentials are never written to the settings file, never logged, and never
@@ -193,6 +198,10 @@ class Settings:
     timezone: str = "UTC"
     # How to authenticate: basic | ntlm | negotiate | none. See AUTH_SCHEMES.
     auth_scheme: str = AUTH_BASIC
+    # Folder of .sql scripts the SQL card lists and runs.
+    sql_dir: str = "sql"
+    # Whether a script that is not a SELECT may run. Off unless asked for.
+    sql_allow_writes: bool = False
     # Where the password came from, for display and troubleshooting. Never the
     # value itself.
     password_source: str = "none"
@@ -236,6 +245,8 @@ class Settings:
             "verify_ssl": self.verify_ssl,
             "ca_bundle": self.ca_bundle,
             "timezone": self.timezone,
+            "sql_dir": self.sql_dir,
+            "sql_allow_writes": self.sql_allow_writes,
             "config_file": self.config_file,
         }
 
@@ -280,6 +291,8 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
             # The mock generates naive timestamps in the host's own zone, so
             # 'local' is what makes a mock read round-trip on any machine.
             timezone=_env("ASPY21_TIMEZONE") or "local",
+            sql_dir=_env("ASPY21_SQL_DIR") or str(Path(__file__).with_name("sql")),
+            sql_allow_writes=_env("ASPY21_SQL_ALLOW_WRITES").lower() in _TRUE,
             config_file=path if saved else "",
         )
 
@@ -364,6 +377,8 @@ def load_settings(config: dict[str, Any] | None = None) -> Settings:
         ca_bundle=ca_bundle,
         timezone=setting("ASPY21_TIMEZONE", "timezone", "UTC"),
         auth_scheme=auth_scheme,
+        sql_dir=setting("ASPY21_SQL_DIR", "sql_dir", str(Path(__file__).with_name("sql"))),
+        sql_allow_writes=_env("ASPY21_SQL_ALLOW_WRITES").lower() in _TRUE,
         password_source=password_source,
         config_file=path if saved else "",
     )

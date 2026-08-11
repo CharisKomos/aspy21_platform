@@ -47,6 +47,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from config import SETTINGS
 from connection import ConnectionError_, ConnectionOverride, settings_or_default, test
 from live_backend import open_backend
+from sql_scripts import (
+    SqlScriptError,
+    build_envelope,
+    is_read_only,
+    list_scripts,
+    read_script,
+    rows_from_response,
+    scripts_dir,
+)
 
 logger = logging.getLogger("aspy21-demo.series")
 
@@ -367,6 +376,155 @@ def api_v1_tags(payload: TagBrowseRequest) -> dict[str, Any]:
         "count": len(tags),
         "mode": active.mode,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
+
+
+class SqlRequest(BaseModel):
+    """Run SQLplus. Either inline ``sql`` or a ``script`` from the scripts folder."""
+
+    sql: str | None = Field(None, description="SQLplus to run. Ignored when 'script' is given.")
+    script: str | None = Field(None, description="Filename in the scripts folder, e.g. daily.sql.")
+    datasource: str | None = Field(None, description="Overrides the configured datasource.")
+    max_rows: int = Field(10_000, gt=0, le=1_000_000)
+    timeout: int = Field(60, gt=0, le=3600)
+    connection: ConnectionOverride | None = None
+
+
+@router.get("/sql/scripts", tags=["sql"])
+def api_sql_scripts() -> dict[str, Any]:
+    """The .sql files available to run, and where they are read from."""
+    folder = getattr(SETTINGS, "sql_dir", "sql")
+    return {
+        "scripts": list_scripts(folder),
+        "directory": str(scripts_dir(folder)),
+        "exists": scripts_dir(folder).is_dir(),
+        "allow_writes": getattr(SETTINGS, "sql_allow_writes", False),
+    }
+
+
+@router.get("/sql/scripts/{name}", tags=["sql"])
+def api_sql_script(name: str) -> dict[str, Any]:
+    """One script's contents, so it can be reviewed before it is run."""
+    try:
+        body = read_script(getattr(SETTINGS, "sql_dir", "sql"), name)
+    except SqlScriptError as exc:
+        raise HTTPException(
+            status_code=404 if exc.kind == "not_found" else 400,
+            detail={"error_kind": exc.kind, "message": exc.message},
+        ) from exc
+    return {"name": name, "sql": body, "read_only": is_read_only(body)}
+
+
+@router.post("/sql", tags=["sql"])
+def api_sql(payload: SqlRequest) -> dict[str, Any]:
+    """Run SQLplus against the historian and return the rows.
+
+    aspy21 builds SQLplus internally but exposes no way to send your own. This
+    wraps a query in the same ``<SQL t="SQLplus">`` envelope the library uses and
+    posts it through the same authenticated client, so auth, TLS and the request
+    log all behave as they do everywhere else.
+    """
+    if payload.script:
+        try:
+            sql = read_script(getattr(SETTINGS, "sql_dir", "sql"), payload.script)
+        except SqlScriptError as exc:
+            raise HTTPException(
+                status_code=404 if exc.kind == "not_found" else 400,
+                detail={"error_kind": exc.kind, "message": exc.message},
+            ) from exc
+    else:
+        sql = payload.sql or ""
+
+    if not sql.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"error_kind": "bad_request", "message": "No SQL to run."},
+        )
+
+    # aspy21 cannot alter the historian; SQLplus can. Refusing writes by default
+    # keeps that guarantee unless it is knowingly given up.
+    if not is_read_only(sql) and not getattr(SETTINGS, "sql_allow_writes", False):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_kind": "write_refused",
+                "message": (
+                    "This script is not a plain SELECT, and writes are disabled. Set "
+                    "ASPY21_SQL_ALLOW_WRITES=true to permit it — and prefer a read-only "
+                    "account on the historian, which no setting here can override."
+                ),
+            },
+        )
+
+    try:
+        active = settings_or_default(payload.connection)
+    except ConnectionError_ as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error_kind": exc.kind, "message": exc.message, "failed_step": exc.step},
+        ) from exc
+
+    datasource = (payload.datasource or active.datasource or "").strip()
+    if not datasource:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_kind": "configuration",
+                "message": ("SQLplus needs a datasource — set one on the connection, or here."),
+            },
+        )
+
+    xml = build_envelope(sql, datasource, max_rows=payload.max_rows, timeout=payload.timeout)
+
+    started = time.perf_counter()
+    with open_backend(settings=active) as backend:
+        client = backend.client()
+        try:
+            # Reuse the library's own authenticated client rather than a new one, so
+            # credentials, TLS and the dashboard's request log all still apply.
+            response = client._client.post(  # the library exposes no public SQL path
+                f"{active.base_url}/SQL", content=xml, headers={"Content-Type": "text/xml"}
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            kind, message = classify(exc, active)
+            logger.warning("sql script failed (%s): %s", kind, exc)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_kind": kind,
+                    "message": message,
+                    "base_url": active.base_url,
+                    "sql": sql[:500],
+                },
+            ) from exc
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        http_calls = backend.http_calls
+
+    rows = rows_from_response(body)
+    if isinstance(body, dict) and isinstance(body.get("error"), str):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_kind": "upstream",
+                "message": f"The historian rejected the query: {body['error']}",
+            },
+        )
+
+    return {
+        "ok": True,
+        "mode": active.mode,
+        "script": payload.script,
+        "sql": sql,
+        "datasource": datasource,
+        "rows": rows,
+        "row_count": len(rows),
+        "columns": sorted({k for r in rows for k in r}) if rows else [],
+        "read_only": is_read_only(sql),
+        "request_xml": xml,
+        "elapsed_ms": elapsed_ms,
+        "http_call_count": len(http_calls),
     }
 
 
