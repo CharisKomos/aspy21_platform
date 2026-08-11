@@ -1,0 +1,51 @@
+# ============================================================================
+#  Run the aspy21 gateway on its own.
+#
+#      docker compose up -d          → http://localhost:8000
+#
+#  Compose reads .env from THIS directory, so connection settings live next to
+#  the code they configure. Copy .env.example to .env and fill it in.
+#
+#  It ships in mock mode, so `docker compose up -d` works with no historian, no
+#  credentials and no network — useful for building a client against.
+#
+#  The DeMAICo stack does not use this file. Its own docker-compose.yml builds
+#  the same image from this directory and supplies the settings itself, so the
+#  two run side by side without colliding — different ports, different .env.
+# ============================================================================
+name: aspy21
+
+services:
+  aspy21:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # mock (default) needs nothing else set. live needs at least BASE_URL and,
+      # unless the server allows anonymous reads, a username and password.
+      - ASPY21_MODE=${ASPY21_MODE:-mock}
+      - ASPY21_BASE_URL=${ASPY21_BASE_URL:-}
+      - ASPY21_DATASOURCE=${ASPY21_DATASOURCE:-}
+      # basic | ntlm | negotiate | none. NTLM wants DOMAIN\user.
+      - ASPY21_AUTH_SCHEME=${ASPY21_AUTH_SCHEME:-basic}
+      - ASPY21_USERNAME=${ASPY21_USERNAME:-}
+      - ASPY21_PASSWORD=${ASPY21_PASSWORD:-}
+      # IP.21 answers in the historian machine's local time with no zone attached.
+      # Wrong here means every reading is stored at the wrong time of day, silently.
+      - ASPY21_TIMEZONE=${ASPY21_TIMEZONE:-UTC}
+      - ASPY21_VERIFY_SSL=${ASPY21_VERIFY_SSL:-true}
+      - ASPY21_CA_BUNDLE=${ASPY21_CA_BUNDLE:-}
+      - ASPY21_TIMEOUT=${ASPY21_TIMEOUT:-30}
+    ports:
+      # Override with ASPY21_PORT if something already holds 8000 — the DeMAICo
+      # stack publishes its own copy on 8001 for exactly that reason.
+      - "${ASPY21_PORT:-8000}:8000"
+    healthcheck:
+      # Green only when the whole chain answers, not merely when the process is up:
+      # in live mode this is a real call to your historian.
+      test: ["CMD", "python", "-c", "import urllib.request,sys,json; r=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=8)); sys.exit(0 if r.get('status')=='ok' else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped

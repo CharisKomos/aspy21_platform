@@ -96,28 +96,55 @@ where to run it.
 
 ### Or run it as a container
 
-There is a `Dockerfile`, so the gateway can run as a service alongside whatever
-consumes it. The image ships in mock mode, so this works with no historian:
+`docker-compose.yml` runs the gateway on its own, independently of anything that
+consumes it:
 
 ```bash
-docker build -t aspy21-gateway .
+cp .env.example .env
 ```
 
 ```bash
-docker run --rm -p 8000:8000 aspy21-gateway
+docker compose up -d
 ```
 
-Point it at a real plant with environment variables rather than the wizard — a
-container has no credential store to save into:
+Then open <http://localhost:8000>. It ships in **mock mode**, so that works with
+no historian, no credentials and no network — which is what makes it useful as a
+test double while building a client.
+
+**Compose reads `.env` from this directory**, so the connection settings sit next
+to the code they configure. To point it at a real plant, edit `.env`:
 
 ```bash
-docker run --rm -p 8000:8000 -e ASPY21_MODE=live -e ASPY21_BASE_URL=https://aspen-hist01/ProcessData -e ASPY21_DATASOURCE=IP21 -e ASPY21_USERNAME=DOMAIN\\svc-user -e ASPY21_PASSWORD="$ASPY21_PASSWORD" -e ASPY21_TIMEZONE=Europe/Athens aspy21-gateway
+ASPY21_MODE=live
+ASPY21_BASE_URL=https://aspen-hist01/ProcessData
+ASPY21_DATASOURCE=IP21
+ASPY21_AUTH_SCHEME=ntlm
+ASPY21_USERNAME=DOMAIN\svc-demaico
+ASPY21_PASSWORD=…
+ASPY21_TIMEZONE=Europe/Athens
 ```
 
-The image runs unprivileged and carries a `HEALTHCHECK` that calls `/api/health`,
-so it reports healthy only once the whole chain answers — not merely once the
-process is up. Pass the password from your shell or a secret; never bake it into
-an image.
+then `docker compose up -d` again. `.env` is git-ignored; `.env.example` is the
+committed template, so never put a real password in it.
+
+Environment variables are how you configure a container — the setup wizard writes
+to a credential store the container does not have.
+
+The image runs unprivileged and its `HEALTHCHECK` calls `/api/health`, so it
+reports healthy only once the whole chain answers — in live mode that is a real
+call to your historian, not merely a sign the process started:
+
+```bash
+docker compose ps
+```
+
+Set `ASPY21_PORT` if something already holds 8000.
+
+> **Running alongside DeMAICo?** That stack builds this same image from this
+> directory and supplies its own settings, publishing on **8001**. The two are
+> separate compose projects with separate `.env` files, so they coexist — and a
+> DeMAICo project that carries its own connection overrides these settings per
+> request anyway.
 
 ### Installing aspy21 from piwheels
 
